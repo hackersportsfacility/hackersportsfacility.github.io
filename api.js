@@ -1,0 +1,76 @@
+// Single entry point for every backend call. Switches to mock.js in demo mode.
+import { API_URL } from './config.js';
+
+export const NETWORK_MESSAGE = "Can't reach the booking system. Check your connection and try again.";
+const TOKEN_KEY = 'hsf_token';
+const PUBLIC_ACTIONS = ['ping', 'requestMembership', 'requestCode', 'verifyCode'];
+let memToken = '';
+
+export class ApiError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+export function isMock() {
+  if (!API_URL) return true;
+  return /[?&]mock(?:[=&]|$)/.test(location.search);
+}
+
+export function getToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || memToken || '';
+  } catch (e) {
+    return memToken;
+  }
+}
+export function setToken(t) {
+  memToken = t || '';
+  try { localStorage.setItem(TOKEN_KEY, t); } catch (e) { /* storage unavailable */ }
+}
+export function clearToken() {
+  memToken = '';
+  try { localStorage.removeItem(TOKEN_KEY); } catch (e) { /* ignore */ }
+}
+
+export async function call(action, params) {
+  const body = Object.assign({ action: action }, params || {});
+  const token = getToken();
+  if (token && PUBLIC_ACTIONS.indexOf(action) === -1) body.token = token;
+
+  let res;
+  if (isMock()) {
+    const mock = await import('./mock.js');
+    res = await mock.handle(body);
+  } else {
+    try {
+      const r = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(body),
+      });
+      res = await r.json();
+    } catch (e) {
+      throw new ApiError('NETWORK', NETWORK_MESSAGE);
+    }
+  }
+
+  if (res && res.ok) {
+    if (action === 'verifyCode' && res.data && res.data.token) setToken(res.data.token);
+    return res.data;
+  }
+  const e = res && res.error ? res.error : {};
+  const err = new ApiError(e.code || 'SERVER', e.message || 'Something went wrong. Please try again.');
+  if (err.code === 'UNAUTHORIZED' && PUBLIC_ACTIONS.indexOf(action) === -1) {
+    clearToken();
+    window.dispatchEvent(new Event('auth:expired'));
+  }
+  throw err;
+}
+
+export function friendlyMessage(err) {
+  if (err && err.code === 'NETWORK') return NETWORK_MESSAGE;
+  if (err && err.message) return err.message;
+  return 'Something went wrong. Please try again.';
+}
