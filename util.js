@@ -125,5 +125,16 @@ export function money(n) {
   return '$' + v.toFixed(2);
 }
 
+// Link to the Booking and Payment Terms page; keeps ?mock and says where to return.
+export function termsLink(from) {
+  return 'terms.html' + location.search + '#from=' + (from || 'account');
+}
+
+// "Oct 24, 2026" from a 'YYYY-MM-DD...' string
+export function fmtDate(s) {
+  const p = parseLocal(s);
+  return MON[p.mo - 1] + ' ' + p.d + ', ' + p.y;
+}
+
 export function isEmail(s) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || '').trim()); }
 export function fullName(p) { return ((p && p.first_name) || '') + ' ' + ((p && p.last_name) || ''); }

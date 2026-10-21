@@ -24,6 +24,20 @@ h2 { font-size:17px; color:var(--court); margin:28px 0 6px; text-wrap:balance; }
 .box { background:var(--court-soft); border:1px solid var(--court); border-radius:6px; padding:12px 14px; font-weight:600; font-size:14px; }
 ul { padding-left:22px; } li { margin-bottom:6px; }
 footer { margin-top:40px; padding-top:12px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }
+[hidden] { display:none !important; }
+.accept { margin-top:32px; background:var(--surface); border:2px solid var(--court); border-radius:8px; padding:16px; }
+.accept h2 { margin-top:0; }
+.accept .status { color:var(--muted); font-size:14px; margin:0 0 12px; }
+.accept label { display:flex; gap:12px; align-items:flex-start; font-weight:600; cursor:pointer; }
+.accept label.locked { opacity:.5; cursor:not-allowed; }
+.accept input[type=checkbox] { width:24px; height:24px; margin:0; flex:none; accent-color:var(--court); }
+.btn { display:inline-flex; align-items:center; justify-content:center; min-height:46px; padding:0 20px; margin-top:14px; width:100%;
+  border-radius:8px; border:0; background:var(--court); color:#fff; font:600 16px "IBM Plex Sans","Segoe UI",system-ui,sans-serif; cursor:pointer; }
+.btn:disabled { opacity:.45; cursor:not-allowed; }
+.btn:focus-visible, .accept input:focus-visible { outline:3px solid var(--ball); outline-offset:2px; }
+.msg { margin:10px 0 0; font-size:14px; }
+.msg.ok { color:#2c7a4b; font-weight:600; } .msg.err { color:#b3261e; font-weight:600; }
+@media (prefers-color-scheme: dark) { .btn { color:#0f1614; } .msg.ok { color:#6cc893; } .msg.err { color:#ff8a80; } }
 </style>
 </head>
 <body>
@@ -32,9 +46,9 @@ footer { margin-top:40px; padding-top:12px; border-top:1px solid var(--line); co
 <p class="meta">Version 1 &#183; Effective October 20, 2026</p>
 <p class="eyebrow">HACKER SPORTS FACILITY</p>
 <h1>Booking and Payment Terms</h1>
-<p class="box">BY SAVING A PAYMENT CARD OR MAKING ANY PAYMENT IN THE HACKER SPORTS FACILITY APP, YOU AGREE TO THESE BOOKING AND PAYMENT TERMS, INCLUDING THE AUTHORIZATION TO CHARGE YOUR SAVED CARD IN SECTION 6 AND THE BINDING ARBITRATION AND JURY TRIAL WAIVER IN SECTION 15.</p>
+<p class="box">PLEASE READ THESE BOOKING AND PAYMENT TERMS ALL THE WAY THROUGH. BEFORE YOU CAN BOOK, SAVE A PAYMENT CARD OR PAY, YOU MUST CHECK THE BOX AT THE END CONFIRMING THAT YOU HAVE READ AND AGREE TO THEM. THEY INCLUDE THE AUTHORIZATION TO CHARGE YOUR SAVED CARD IN SECTION 6 AND THE BINDING ARBITRATION AND JURY TRIAL WAIVER IN SECTION 15.</p>
 <h2>1. About These Terms</h2>
-<p>These Booking and Payment Terms (the <strong>&quot;Terms&quot;</strong>) apply to every booking at Hacker Sports Facility, 3450 Centennial Rd., Sylvania, Ohio 43560 (the <strong>&quot;Facility&quot;</strong>), which is owned and operated by 3450 Centennial Rd LLC, an Ohio limited liability company (the <strong>&quot;Owner,&quot; &quot;we&quot;</strong> or <strong>&quot;us&quot;</strong>). &quot;You&quot; means the member or guest who saves a card, makes a payment, or books or joins a booking.</p>
+<p>These Booking and Payment Terms (the <strong>&quot;Terms&quot;</strong>) apply to every booking at Hacker Sports Facility, 3450 Centennial Rd., Sylvania, Ohio 43560 (the <strong>&quot;Facility&quot;</strong>), which is owned and operated by 3450 Centennial Rd LLC, an Ohio limited liability company (the <strong>&quot;Owner,&quot; &quot;we&quot;</strong> or <strong>&quot;us&quot;</strong>). &quot;You&quot; means the member or guest who saves a card, makes a payment, or books or joins a booking. You accept these Terms by reading them in the Hacker Sports Facility app and checking the box at the end confirming that you have read and agree to them. We keep a record of the version you accepted and when.</p>
 <p>These Terms work together with the Participant Agreement, Assumption of Risk, Release and Waiver of Liability, Indemnity, and Arbitration Agreement (the <strong>&quot;Participant Agreement&quot;</strong>) that every person must sign before using the Facility. If these Terms and the Participant Agreement conflict on safety, risk or liability, the Participant Agreement controls.</p>
 <h2>2. Membership and Access</h2>
 <ul>
@@ -99,13 +113,87 @@ footer { margin-top:40px; padding-top:12px; border-top:1px solid var(--line); co
 <h2>13. Privacy</h2>
 <p>We collect the information you give us (such as your name, email, phone number, emergency contact, date of birth and signed waiver), your booking and payment history, door access records and security camera recordings. We use this information only to operate, secure and manage the Facility. We do not sell it. Payment card details are held by Stripe. Other players on a booking see only your name.</p>
 <h2>14. Changes to These Terms</h2>
-<p>We may update these Terms. The current version is always available in the app. When we make a material change, we will notify you by email or in the app, and the new version applies to bookings made, and payments taken, after that notice. Saving a card or making a payment after the notice confirms that you accept the updated Terms.</p>
+<p>We may update these Terms. The current version is always available in the app. When we make a material change, we will notify you by email or in the app, and the new version applies to bookings made, and payments taken, after that notice. You will be asked to read and accept the updated Terms in the app, by checking the box at the end, before your next booking or payment.</p>
 <h2>15. Disputes, Arbitration and Jury Trial Waiver</h2>
 <p>These Terms, and any claim, controversy or dispute arising out of them, are governed by and will be construed in accordance with the laws of the State of Ohio. Section 15 of the Participant Agreement (Binding Arbitration, Class Action Waiver and Jury Trial Waiver) applies to any dispute arising out of or relating to these Terms, any booking or any payment, and is incorporated into these Terms. This means <strong>disputes will be resolved by binding individual arbitration, not in court, and you knowingly, voluntarily and unconditionally waive any right to a jury trial</strong>, except for qualifying small claims. If you opted out of arbitration under the Participant Agreement within 30 days of signing it, that opt-out also applies to these Terms.</p>
 <h2>16. Contact</h2>
 <p>Hacker Sports Facility &#183; 3450 Centennial Rd., Sylvania, Ohio 43560 &#183; hackersportsfacility@gmail.com</p>
 
+<div id="terms-end" aria-hidden="true"></div>
+<section class="accept" id="accept" aria-labelledby="accept-title">
+  <h2 id="accept-title">Accept the Booking and Payment Terms</h2>
+  <p class="status" id="accept-status">Scroll to the end of the terms to continue.</p>
+  <label class="locked" id="agree-label" for="agree">
+    <input type="checkbox" id="agree" disabled aria-labelledby="agree-text">
+    <span id="agree-text">I have read and agree to the Hacker Sports Facility Booking and Payment Terms (Version 1).</span>
+  </label>
+  <button class="btn" type="button" id="accept-btn" disabled>Accept terms</button>
+  <p class="msg" id="accept-msg" role="status" aria-live="polite"></p>
+</section>
 <footer>Hacker Sports Facility &middot; 3450 Centennial Rd., Sylvania, Ohio 43560</footer>
 </main>
+<script type="module">
+import { call, getToken, friendlyMessage } from './api.js';
+const VERSION = 1;
+const box = document.getElementById('agree');
+const label = document.getElementById('agree-label');
+const btn = document.getElementById('accept-btn');
+const status = document.getElementById('accept-status');
+const msg = document.getElementById('accept-msg');
+const end = document.getElementById('terms-end');
+const fromMatch = /from=([a-z]+)/.exec(location.hash);
+const back = './' + location.search + '#/' + (fromMatch ? fromMatch[1] : 'account');
+document.querySelectorAll('a.back').forEach(function (a) { a.href = back; });
+
+function unlock() {
+  if (!box.disabled || btn.dataset.done) return;
+  box.disabled = false;
+  label.classList.remove('locked');
+  status.textContent = 'You have reached the end of the terms. Check the box to accept them.';
+}
+
+if (!getToken()) {
+  status.textContent = 'Sign in to the app, then open these terms from the Account screen to accept them.';
+} else {
+  call('me', {}).then(function (me) {
+    const t = me.terms || {};
+    if (me.member && me.member.is_owner) {
+      document.getElementById('accept').hidden = true;
+    } else if (t.accepted && t.version === VERSION) {
+      btn.dataset.done = '1';
+      status.textContent = 'You accepted these terms' + (t.accepted_at ? ' on ' + t.accepted_at.slice(0, 10) : '') + '.';
+      box.checked = true; box.disabled = true; btn.hidden = true;
+    }
+  }).catch(function () { /* the page still works; accepting will report any problem */ });
+
+  // The checkbox unlocks only once the end of the terms has been scrolled into view.
+  if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver(function (entries) {
+      if (entries.some(function (e) { return e.isIntersecting; })) { unlock(); io.disconnect(); }
+    });
+    io.observe(end);
+  } else {
+    const check = function () {
+      if (end.getBoundingClientRect().top <= window.innerHeight) { unlock(); window.removeEventListener('scroll', check); }
+    };
+    window.addEventListener('scroll', check, { passive: true });
+    check();
+  }
+
+  box.addEventListener('change', function () { btn.disabled = !box.checked; });
+  btn.addEventListener('click', async function () {
+    btn.disabled = true; btn.textContent = 'Saving...'; msg.className = 'msg'; msg.textContent = '';
+    try {
+      await call('acceptTerms', { version: VERSION });
+      btn.dataset.done = '1'; box.disabled = true; btn.hidden = true;
+      msg.className = 'msg ok'; msg.textContent = 'Thank you. Your acceptance is saved. Returning to the app...';
+      setTimeout(function () { location.href = back; }, 1200);
+    } catch (e) {
+      msg.className = 'msg err'; msg.textContent = friendlyMessage(e);
+      btn.disabled = !box.checked; btn.textContent = 'Accept terms';
+    }
+  });
+}
+</script>
 </body>
 </html>

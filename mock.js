@@ -22,7 +22,10 @@ function member(id, first, last, email, role, status, extra) {
     phone: '555-010' + id.slice(-1), emergency_contact_name: 'Pat ' + last, emergency_contact_phone: '555-0199',
     is_minor: false, date_of_birth: '', guardian_name: '', guardian_email: '', invited_by_member_id: '',
     weekly_limit_override: '', book_ahead_override: '', auto_approve: false, credit_balance: 0, strike_count: 0,
-    waiver_version_signed: role === 'Owner' ? 1 : (id === 'M0003' ? 0 : 1), created_at: addDays(todayYmd(), -30) + 'T09:00',
+    waiver_version_signed: role === 'Owner' ? 1 : (id === 'M0003' ? 0 : 1),
+    // Alex (M0002) starts without accepting the Booking Terms, to demo the scroll-and-accept flow.
+    booking_terms_version: id === 'M0002' ? 0 : 1, booking_terms_accepted_at: id === 'M0002' ? '' : addDays(todayYmd(), -29) + 'T09:05',
+    created_at: addDays(todayYmd(), -30) + 'T09:00',
     approved_at: addDays(todayYmd(), -29) + 'T09:00', notes: '',
   }, extra || {});
 }
@@ -170,6 +173,7 @@ function run(req) {
       case 'myBookings': return myBookings(req, v);
       case 'cancelBooking': return cancelBooking(req, v);
       case 'knownPlayers': return knownPlayers(v);
+      case 'acceptTerms': return acceptTerms(req, v);
       case 'signOut': return ok({ signed_out: true });
     }
     if (a.indexOf('owner') === 0) {
@@ -213,6 +217,29 @@ function verifyCode(r) {
   return ok({ token: 'mock-' + m.member_id, member: summary(m) });
 }
 
+const TERMS_VERSION = 1;
+// terms.html is a separate page, so a demo acceptance is kept for the browser session.
+const TERMS_KEY = 'hsf_mock_terms_';
+function termsStatus(v) {
+  try {
+    const saved = sessionStorage.getItem(TERMS_KEY + v.member_id);
+    if (saved && !v.booking_terms_version) { v.booking_terms_version = TERMS_VERSION; v.booking_terms_accepted_at = saved; }
+  } catch (e) { /* storage unavailable */ }
+  return {
+    version: TERMS_VERSION,
+    accepted: v.role === 'Owner' || v.booking_terms_version >= TERMS_VERSION,
+    accepted_version: v.booking_terms_version || 0,
+    accepted_at: v.booking_terms_accepted_at || '',
+  };
+}
+function acceptTerms(r, v) {
+  if (Number(r.version) !== TERMS_VERSION) return err('BAD_REQUEST', 'These terms have been updated. Please reload the page and read the latest version.');
+  v.booking_terms_version = TERMS_VERSION;
+  v.booking_terms_accepted_at = nowLocal();
+  try { sessionStorage.setItem(TERMS_KEY + v.member_id, v.booking_terms_accepted_at); } catch (e) { /* storage unavailable */ }
+  return ok({ terms: termsStatus(v) });
+}
+
 function me(v) {
   const t = todayYmd(), ws = mondayOf(t);
   return ok({
@@ -221,6 +248,7 @@ function me(v) {
     book_ahead_days: BOOK_AHEAD,
     waiver_on_file: v.waiver_version_signed >= 1,
     waiver_form_url: 'https://example.com/waiver-demo',
+    terms: termsStatus(v),
     settings: Object.assign({}, SETTINGS),
   });
 }
@@ -256,6 +284,7 @@ function availability(r, v) {
 }
 
 function createBooking(r, v) {
+  if (!termsStatus(v).accepted) return err('TERMS_REQUIRED', 'Please read and accept the Booking and Payment Terms before booking. You can do this from the Account screen.');
   const res = resById(r.resource_id);
   if (!res || !r.start) return err('BAD_REQUEST', 'Missing or invalid booking details.');
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(r.start)) return err('BAD_REQUEST', 'Invalid start time.');
