@@ -101,7 +101,8 @@ export async function renderBookings(root, ctx) {
 
 function playerRow(bk, p) {
   let share;
-  if (bk.pay_mode === 'BookerPays' && !(p.share_amount > 0)) share = 'Covered by booker';
+  if (p.share_status === 'Waived') share = 'Waived';
+  else if (bk.pay_mode === 'BookerPays' && !(p.share_amount > 0)) share = 'Covered by booker';
   else share = money(p.share_amount) + (p.share_status ? ' · ' + p.share_status : '');
   return h('li', null,
     h('span', { class: 'pname' }, fullName(p),

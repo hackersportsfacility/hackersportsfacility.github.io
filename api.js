@@ -32,6 +32,37 @@ export function setToken(t) {
 export function clearToken() {
   memToken = '';
   try { localStorage.removeItem(TOKEN_KEY); } catch (e) { /* ignore */ }
+  clearCache();
+}
+
+// ---- startup cache (release 2): last startup payload, so the grid can paint instantly ----
+const CACHE_KEY = 'hsf_cache_v1';
+const CACHE_MAX_AGE_MS = 24 * 3600 * 1000;
+function tokenHint(t) { return String(t || '').slice(-8); }
+
+export function saveCache(data) {
+  try {
+    const t = getToken();
+    if (!t || !data || !data.me) return;
+    localStorage.setItem(CACHE_KEY, JSON.stringify({
+      token_hash_hint: tokenHint(t), me: data.me, resources: data.resources, availability: data.availability, saved_at: Date.now(),
+    }));
+  } catch (e) { /* storage unavailable or full: the cache is optional */ }
+}
+export function readCache() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const c = JSON.parse(raw);
+    const t = getToken();
+    if (!c || !t || c.token_hash_hint !== tokenHint(t)) return null;
+    if (!c.me || !c.me.member || !c.resources || !c.availability || !c.availability.days) return null;
+    if (!(Date.now() - Number(c.saved_at) < CACHE_MAX_AGE_MS)) { clearCache(); return null; }
+    return c;
+  } catch (e) { return null; }
+}
+export function clearCache() {
+  try { localStorage.removeItem(CACHE_KEY); } catch (e) { /* ignore */ }
 }
 
 export async function call(action, params) {

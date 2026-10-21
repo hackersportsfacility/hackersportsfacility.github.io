@@ -22,6 +22,11 @@ function termsBlock(me) {
       h('p', { class: 'hint', text: 'Fees, payments, cancellations and credits. As the owner, you don’t need to accept these.' }),
       h('a', { class: 'btn', href: termsLink('account'), text: 'Read the terms' }));
   }
+  if (me.member.role === 'Family') {
+    return h('div', null,
+      h('p', { class: 'hint', text: 'Fees, payments, cancellations and credits. As a family member, you don’t need to accept these.' }),
+      h('a', { class: 'btn', href: termsLink('account'), text: 'Read the terms' }));
+  }
   if (t.accepted) {
     return h('div', null,
       h('p', null, h('span', { class: 'pill ok', text: 'Accepted' }),
@@ -65,7 +70,8 @@ export async function renderAccount(root, ctx) {
     h('h1', { text: 'Account' }),
     h('section', { class: 'card' },
       h('h2', { text: fullName(m) }),
-      h('p', { class: 'hint', text: m.email + (m.is_owner ? ' · Owner' : '') })),
+      h('p', { class: 'hint', text: m.email + (m.is_owner ? ' · Owner' : '') }),
+      m.role === 'Family' ? h('p', { class: 'hint', text: 'Family member' }) : null),
     h('section', { class: 'card' }, h('h2', { text: 'Waiver' }), waiver),
     h('section', { class: 'card' }, h('h2', { text: 'Booking and Payment Terms' }), termsBlock(me)),
     h('section', { class: 'card' }, h('h2', { text: 'Add to Home Screen' }),

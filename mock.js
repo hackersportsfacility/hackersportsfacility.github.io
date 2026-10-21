@@ -1,6 +1,6 @@
 // In-memory fake of the booking engine (docs/phase1-api-contract.md). Demo mode only.
-// Sign in with any email (alex@example.com = regular member, anything else = owner). Code: 123456.
-import { pad, todayYmd, addDays, nowLocal, mondayOf, parseLocal } from './util.js';
+// Sign in with any email (alex@example.com = regular member, jordan@example.com = family, anything else = owner). Code: 123456.
+import { pad, todayYmd, addDays, nowLocal, mondayOf, parseLocal, dowName, monthName, dayNum, timeRange } from './util.js';
 
 const FACILITY = 'Hacker Sports Facility';
 const SETTINGS = { open_hour: 6, close_hour: 22, block_hours: 2, max_players_per_court: 4, free_cancel_hours: 24 };
@@ -8,13 +8,14 @@ const WEEKLY_LIMIT = 3;
 const BOOK_AHEAD = 7;
 
 const RESOURCES = [
-  { resource_id: 'COURT1', name: 'Court 1', block_hours: 2, rate_per_hour: 20, courts: 1 },
-  { resource_id: 'COURT2', name: 'Court 2', block_hours: 2, rate_per_hour: 20, courts: 1 },
-  { resource_id: 'BOTH', name: 'Both Courts', block_hours: 2, rate_per_hour: 40, courts: 2 },
+  { resource_id: 'COURT1', name: 'Court 1', block_hours: 2, rate_per_hour: 20, courts: 1, visible_to: '', max_hours: null },
+  { resource_id: 'COURT2', name: 'Court 2', block_hours: 2, rate_per_hour: 20, courts: 1, visible_to: '', max_hours: null },
+  { resource_id: 'BOTH', name: 'Both Courts', block_hours: 2, rate_per_hour: 40, courts: 2, visible_to: '', max_hours: null },
+  { resource_id: 'GOLF', name: 'Golf Simulator', block_hours: 2, rate_per_hour: 0, courts: 1, visible_to: 'Owner,Family', max_hours: 4 },
 ];
 
 const now0 = nowLocal();
-let seqM = 6, seqB = 0, seqS = 0;
+let seqM = 7, seqB = 0, seqS = 0;
 
 function member(id, first, last, email, role, status, extra) {
   return Object.assign({
@@ -22,7 +23,7 @@ function member(id, first, last, email, role, status, extra) {
     phone: '555-010' + id.slice(-1), emergency_contact_name: 'Pat ' + last, emergency_contact_phone: '555-0199',
     is_minor: false, date_of_birth: '', guardian_name: '', guardian_email: '', invited_by_member_id: '',
     weekly_limit_override: '', book_ahead_override: '', auto_approve: false, credit_balance: 0, strike_count: 0,
-    waiver_version_signed: role === 'Owner' ? 1 : (id === 'M0003' ? 0 : 1),
+    waiver_version_signed: id === 'M0003' ? 0 : 1,
     // Alex (M0002) starts without accepting the Booking Terms, to demo the scroll-and-accept flow.
     booking_terms_version: id === 'M0002' ? 0 : 1, booking_terms_accepted_at: id === 'M0002' ? '' : addDays(todayYmd(), -29) + 'T09:05',
     created_at: addDays(todayYmd(), -30) + 'T09:00',
@@ -37,6 +38,7 @@ const members = [
   member('M0004', 'Priya', 'Patel', 'priya@example.com', 'Member', 'Active'),
   member('M0005', 'Sam', 'Rivera', 'sam@example.com', 'Guest', 'Pending', { invited_by_member_id: 'M0002', approved_at: '' }),
   member('M0006', 'Chris', 'Wong', 'chris@example.com', 'Member', 'Suspended'),
+  member('M0007', 'Jordan', 'Hacker', 'jordan@example.com', 'Family', 'Active'),
 ];
 
 const bookings = [];
@@ -60,19 +62,22 @@ function splitShares(total, n) {
   return out;
 }
 
+function isPriv(m) { return !!m && (m.role === 'Owner' || m.role === 'Family'); }
+
 function addBooking(o) {
   const res = resById(o.resource_id);
-  const owner = memById(o.booker) .role === 'Owner';
-  const total = owner ? 0 : res.rate_per_hour * res.block_hours;
+  const priv = isPriv(memById(o.booker));
+  const total = priv ? 0 : res.rate_per_hour * res.block_hours;
   const ids = [o.booker].concat(o.guests || []);
   const shares = o.pay_mode === 'BookerPays' ? [total] : splitShares(total, ids.length);
   seqB++;
   const b = {
     booking_id: 'B' + ('00000' + seqB).slice(-5), status: o.status, resource_id: o.resource_id,
-    start: o.start, end: endOf(o.start), pay_mode: o.pay_mode || 'Split', total_amount: total,
+    start: o.start, end: o.end || endOf(o.start), pay_mode: o.pay_mode || 'Split', total_amount: total,
     booker: o.booker, notes: o.notes || '', cancelled_at: '',
     players: ids.map(function (id, i) {
       seqS++;
+      if (priv) return { member_id: id, share_amount: 0, share_status: 'Waived' };
       return { member_id: id, share_amount: shares[i] == null ? 0 : shares[i], share_status: shares[i] == null ? '' : 'Pending' };
     }),
     created_at: o.created_at || now0,
@@ -93,12 +98,22 @@ addBooking({ resource_id: 'COURT1', start: dayAt(-2, 10), status: 'Completed', b
 addBooking({ resource_id: 'COURT2', start: dayAt(-5, 16), status: 'Completed', booker: 'M0002', guests: ['M0003'] });
 addBooking({ resource_id: 'COURT2', start: dayAt(-3, 8), status: 'Cancelled', booker: 'M0002', guests: [], notes: '' });
 addBooking({ resource_id: 'BOTH', start: dayAt(-4, 18), status: 'Completed', booker: 'M0001', guests: ['M0002', 'M0003', 'M0004'] });
+// Golf Simulator (Owner and Family only)
+addBooking({ resource_id: 'GOLF', start: dayAt(1, 10), status: 'Approved', booker: 'M0001', guests: [], pay_mode: 'BookerPays' });
+addBooking({ resource_id: 'GOLF', start: dayAt(1, 18), status: 'Approved', booker: 'M0007', guests: [], pay_mode: 'BookerPays' });
+addBooking({ resource_id: 'GOLF', start: dayAt(2, 14), end: dayAt(2, 18), status: 'Approved', booker: 'M0001', guests: ['M0007'], pay_mode: 'BookerPays' });
+addBooking({ resource_id: 'GOLF', start: dayAt(3, 8), status: 'Pending', booker: 'M0007', guests: [], pay_mode: 'BookerPays' });
 
 // ---- helpers ----
 function err(code, message) { return { ok: false, error: { code: code, message: message } }; }
 function ok(data) { return { ok: true, data: data }; }
 const active = function (b) { return b.status === 'Pending' || b.status === 'Approved'; };
-const conflicts = function (a, b) { return a === b || a === 'BOTH' || b === 'BOTH'; };
+// BOTH conflicts with each court; the golf simulator conflicts with nothing else.
+const conflicts = function (a, b) { return a === b || (a !== 'GOLF' && b !== 'GOLF' && (a === 'BOTH' || b === 'BOTH')); };
+const visibleTo = function (res, v) {
+  const list = String(res.visible_to || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  return !list.length || list.indexOf(v.role) !== -1;
+};
 const overlaps = function (a, b) { return a.start < b.end && a.end > b.start; };
 const summary = function (m) {
   return { member_id: m.member_id, first_name: m.first_name, last_name: m.last_name, email: m.email, role: m.role, status: m.status, is_owner: m.role === 'Owner' };
@@ -110,8 +125,11 @@ function viewer(token) {
   return mem && mem.status === 'Active' ? mem : null;
 }
 
+// Demo badge cycles Owner -> Member -> Family -> Owner.
 export function switchUser(token) {
-  return token === 'mock-M0002' ? 'mock-M0001' : 'mock-M0002';
+  if (token === 'mock-M0001') return 'mock-M0002';
+  if (token === 'mock-M0002') return 'mock-M0007';
+  return 'mock-M0001';
 }
 
 function detail(b, v, withContact) {
@@ -167,9 +185,11 @@ function run(req) {
     if (!v) return err('UNAUTHORIZED', 'Please sign in again.');
     switch (a) {
       case 'me': return me(v);
-      case 'resources': return ok(RESOURCES.slice());
+      case 'resources': return ok(visibleResources(v));
       case 'availability': return availability(req, v);
+      case 'startup': return startup(req, v);
       case 'createBooking': return createBooking(req, v);
+      case 'createBookings': return createBookings(req, v);
       case 'myBookings': return myBookings(req, v);
       case 'cancelBooking': return cancelBooking(req, v);
       case 'knownPlayers': return knownPlayers(v);
@@ -211,7 +231,8 @@ function requestCode(r) {
 }
 
 function verifyCode(r) {
-  const m = memByEmail(r.email);
+  // Demo: any unknown email signs in as the owner (the sign-in hint promises "any email works").
+  const m = memByEmail(r.email) || memByEmail('ryan@example.com');
   if (!m || m.status !== 'Active') return err('UNAUTHORIZED', 'That code did not match. Try again.');
   if (String(r.code) !== '123456') return err('UNAUTHORIZED', 'That code did not match. (Demo code: 123456)');
   return ok({ token: 'mock-' + m.member_id, member: summary(m) });
@@ -227,7 +248,7 @@ function termsStatus(v) {
   } catch (e) { /* storage unavailable */ }
   return {
     version: TERMS_VERSION,
-    accepted: v.role === 'Owner' || v.booking_terms_version >= TERMS_VERSION,
+    accepted: isPriv(v) || v.booking_terms_version >= TERMS_VERSION,
     accepted_version: v.booking_terms_version || 0,
     accepted_at: v.booking_terms_accepted_at || '',
   };
@@ -240,12 +261,21 @@ function acceptTerms(r, v) {
   return ok({ terms: termsStatus(v) });
 }
 
+function visibleResources(v) { return RESOURCES.filter(function (r) { return visibleTo(r, v); }); }
+
+function startup(r, v) {
+  const a = availability(r, v);
+  if (!a.ok) return a;
+  return ok({ me: me(v).data, resources: visibleResources(v), availability: a.data });
+}
+
 function me(v) {
-  const t = todayYmd(), ws = mondayOf(t);
+  const t = todayYmd(), ws = mondayOf(t), priv = isPriv(v);
   return ok({
     member: summary(v),
-    week: { used: weekCount(v.member_id, t), limit: WEEKLY_LIMIT, week_start: ws, week_end: addDays(ws, 6) },
-    book_ahead_days: BOOK_AHEAD,
+    week: { used: weekCount(v.member_id, t), limit: priv ? null : WEEKLY_LIMIT, week_start: ws, week_end: addDays(ws, 6) },
+    book_ahead_days: priv ? null : BOOK_AHEAD,
+    unlimited_ahead: priv,
     waiver_on_file: v.waiver_version_signed >= 1,
     waiver_form_url: 'https://example.com/waiver-demo',
     terms: termsStatus(v),
@@ -254,16 +284,20 @@ function me(v) {
 }
 
 function availability(r, v) {
+  const priv = isPriv(v);
   const from = r.from || todayYmd();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) return err('BAD_REQUEST', 'Invalid date.');
-  const n = r.days == null ? BOOK_AHEAD + 1 : Number(r.days);
+  if (from < todayYmd()) return err('BAD_REQUEST', 'That date is in the past.');
+  const n = r.days == null ? (priv ? 7 : BOOK_AHEAD + 1) : Number(r.days);
   if (!(n >= 1 && n <= 14)) return err('BAD_REQUEST', 'days must be between 1 and 14.');
-  const nowS = nowLocal(), days = [];
+  const nowS = nowLocal(), days = [], last = addDays(todayYmd(), BOOK_AHEAD);
+  const visible = visibleResources(v);
   for (let i = 0; i < n; i++) {
     const date = addDays(from, i), blocks = [];
+    if (!priv && date > last) break; // members never see past their window
     for (let h = SETTINGS.open_hour; h + SETTINGS.block_hours <= SETTINGS.close_hour; h += SETTINGS.block_hours) {
       const start = date + 'T' + pad(h) + ':00', end = endOf(start), slots = {};
-      RESOURCES.forEach(function (res) {
+      visible.forEach(function (res) {
         let st = 'free';
         if (start <= nowS) st = 'past';
         else {
@@ -287,52 +321,125 @@ function createBooking(r, v) {
   if (!termsStatus(v).accepted) return err('TERMS_REQUIRED', 'Please read and accept the Booking and Payment Terms before booking. You can do this from the Account screen.');
   const res = resById(r.resource_id);
   if (!res || !r.start) return err('BAD_REQUEST', 'Missing or invalid booking details.');
+  if (!visibleTo(res, v)) return err('FORBIDDEN', "That resource isn't available to you.");
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(r.start)) return err('BAD_REQUEST', 'Invalid start time.');
   const payMode = r.pay_mode || 'Split';
   if (payMode !== 'Split' && payMode !== 'BookerPays') return err('BAD_REQUEST', 'Invalid pay mode.');
-  const owner = v.role === 'Owner';
+  const priv = isPriv(v);
   if (!isOnGrid(r.start)) return err('OUT_OF_WINDOW', 'That time is outside the booking blocks.');
   if (r.start <= nowLocal()) return err('OUT_OF_WINDOW', 'That time has already passed.');
-  if (!owner && r.start.slice(0, 10) > addDays(todayYmd(), BOOK_AHEAD)) return err('OUT_OF_WINDOW', 'You can book up to ' + BOOK_AHEAD + ' days ahead.');
+  if (!priv && r.start.slice(0, 10) > addDays(todayYmd(), BOOK_AHEAD)) return err('OUT_OF_WINDOW', 'You can book up to ' + BOOK_AHEAD + ' days ahead.');
   const end = endOf(r.start);
   const clash = bookings.some(function (b) { return active(b) && conflicts(b.resource_id, res.resource_id) && overlaps(b, { start: r.start, end: end }); });
   if (clash) return err('SLOT_TAKEN', 'Sorry, that time was just booked by someone else.');
-  if (!owner && weekCount(v.member_id, r.start.slice(0, 10)) >= WEEKLY_LIMIT) {
+  if (!priv && weekCount(v.member_id, r.start.slice(0, 10)) >= WEEKLY_LIMIT) {
     return err('LIMIT_REACHED', 'You have used all ' + WEEKLY_LIMIT + ' bookings for that week.');
   }
-  const guests = Array.isArray(r.guests) ? r.guests : [];
-  if (1 + guests.length > SETTINGS.max_players_per_court * res.courts) {
-    return err('TOO_MANY_PLAYERS', 'This booking allows up to ' + (SETTINGS.max_players_per_court * res.courts) + ' players.');
-  }
-  const ids = [v.member_id], emails = [v.email.toLowerCase()], created = [];
+  const gr = checkGuests(r.guests, v, SETTINGS.max_players_per_court * res.courts);
+  if (gr.error) return gr.error;
+  const ids = [v.member_id].concat(createGuests(gr.list, v));
+  const b = addBooking({ resource_id: res.resource_id, start: r.start, status: v.role === 'Family' ? 'Pending' : (priv ? 'Approved' : 'Pending'), booker: v.member_id, guests: ids.slice(1), pay_mode: priv ? 'BookerPays' : payMode });
+  return ok({ booking: detail(b, v) });
+}
+
+// Validates guests without creating anyone. Returns { list } or { error }.
+function checkGuests(input, v, maxPlayers) {
+  const guests = Array.isArray(input) ? input : [];
+  if (1 + guests.length > maxPlayers) return { error: err('TOO_MANY_PLAYERS', 'This booking allows up to ' + maxPlayers + ' players.') };
+  const emails = [v.email.toLowerCase()], list = [];
   for (let i = 0; i < guests.length; i++) {
     const g = guests[i];
-    let m = g.member_id ? memById(g.member_id) : memByEmail(g.email);
-    if (g.member_id && (!m || m.status !== 'Active')) return err('BAD_REQUEST', 'One of the players could not be found.');
+    const m = g.member_id ? memById(g.member_id) : memByEmail(g.email);
+    if (g.member_id && (!m || m.status !== 'Active')) return { error: err('BAD_REQUEST', 'One of the players could not be found.') };
     if (!m) {
       if (!g.first_name || !g.last_name || !g.email || !g.phone || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(g.email)) {
-        return err('BAD_REQUEST', 'Each new guest needs a first name, last name, email and mobile number.');
+        return { error: err('BAD_REQUEST', 'Each new guest needs a first name, last name, email and mobile number.') };
       }
     } else if (m.status === 'Suspended' || m.status === 'Revoked') {
-      return err('FORBIDDEN', m.first_name + ' ' + m.last_name + ' cannot be added as a player right now.');
+      return { error: err('FORBIDDEN', m.first_name + ' ' + m.last_name + ' cannot be added as a player right now.') };
     }
     const em = (m ? m.email : g.email).trim().toLowerCase();
-    if (emails.indexOf(em) !== -1) return err('BAD_REQUEST', 'The same person is listed twice.');
+    if (emails.indexOf(em) !== -1) return { error: err('BAD_REQUEST', 'The same person is listed twice.') };
     emails.push(em);
-    created.push(m || g);
+    list.push(m || g);
   }
-  created.forEach(function (m, i) {
-    if (!m.member_id) {
-      seqM++;
-      const nm = member('M' + ('0000' + seqM).slice(-4), m.first_name.trim(), m.last_name.trim(), m.email.trim(), 'Guest', 'Pending',
-        { phone: m.phone, invited_by_member_id: v.member_id, approved_at: '', created_at: nowLocal() });
-      members.push(nm);
-      m = nm;
-    }
-    ids.push(m.member_id);
+  return { list: list };
+}
+
+// Creates Pending guest members for new people; returns every guest's member_id.
+function createGuests(list, v) {
+  return list.map(function (m) {
+    if (m.member_id) return m.member_id;
+    seqM++;
+    const nm = member('M' + ('0000' + seqM).slice(-4), m.first_name.trim(), m.last_name.trim(), m.email.trim(), 'Guest', 'Pending',
+      { phone: m.phone, invited_by_member_id: v.member_id, approved_at: '', created_at: nowLocal() });
+    members.push(nm);
+    return nm.member_id;
   });
-  const b = addBooking({ resource_id: res.resource_id, start: r.start, status: owner ? 'Approved' : 'Pending', booker: v.member_id, guests: ids.slice(1), pay_mode: payMode });
-  return ok({ booking: detail(b, v) });
+}
+
+function sessionLabel(res, s) {
+  const d = s.start.slice(0, 10);
+  return res.name + ', ' + dowName(d) + ' ' + monthName(d) + ' ' + dayNum(d) + ' ' + timeRange(s.start, s.end, true);
+}
+function hrsOf(s) {
+  const a = parseLocal(s.start), b = parseLocal(s.end);
+  return ((b.h * 60 + b.mi) - (a.h * 60 + a.mi)) / 60;
+}
+
+// Privileged multi-session booking: validate, merge, all-or-nothing conflict check, then create.
+function createBookings(r, v) {
+  if (!isPriv(v)) return err('FORBIDDEN', 'Only the owner and family can book several times at once.');
+  const input = Array.isArray(r.sessions) ? r.sessions : [];
+  if (!input.length) return err('BAD_REQUEST', 'Pick at least one time.');
+  const nowS = nowLocal(), list = [];
+  for (let i = 0; i < input.length; i++) {
+    const s = input[i], res = s && resById(s.resource_id);
+    if (!res) return err('BAD_REQUEST', 'Missing or invalid booking details.');
+    if (!visibleTo(res, v)) return err('FORBIDDEN', "That resource isn't available to you.");
+    const re = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+    if (!re.test(s.start) || !re.test(s.end)) return err('BAD_REQUEST', 'Invalid start or end time.');
+    const a = parseLocal(s.start), b = parseLocal(s.end);
+    const onGrid = function (p) { return p.mi === 0 && p.h >= SETTINGS.open_hour && p.h <= SETTINGS.close_hour && (p.h - SETTINGS.open_hour) % res.block_hours === 0; };
+    if (s.start.slice(0, 10) !== s.end.slice(0, 10) || !onGrid(a) || !onGrid(b)) return err('BAD_REQUEST', 'That time is outside the booking blocks.');
+    if (s.end <= s.start) return err('BAD_REQUEST', 'The end must be after the start.');
+    if (res.max_hours && hrsOf(s) > res.max_hours) return err('BAD_REQUEST', res.name + ' bookings can be up to ' + res.max_hours + ' hours.');
+    if (s.start <= nowS) return err('OUT_OF_WINDOW', 'That time has already passed.');
+    list.push({ resource_id: res.resource_id, start: s.start, end: s.end });
+  }
+  list.sort(function (x, y) {
+    if (x.resource_id !== y.resource_id) return x.resource_id < y.resource_id ? -1 : 1;
+    return x.start < y.start ? -1 : x.start > y.start ? 1 : 0;
+  });
+  const merged = [];
+  for (let i = 0; i < list.length; i++) {
+    const s = list[i], last = merged[merged.length - 1];
+    if (last && last.resource_id === s.resource_id) {
+      if (s.start < last.end) return err('BAD_REQUEST', 'Some of those times overlap each other.');
+      if (s.start === last.end) { last.end = s.end; continue; }
+    }
+    merged.push({ resource_id: s.resource_id, start: s.start, end: s.end });
+  }
+  for (let i = 0; i < merged.length; i++) {
+    const res = resById(merged[i].resource_id);
+    if (res.max_hours && hrsOf(merged[i]) > res.max_hours) return err('BAD_REQUEST', res.name + ' bookings can be up to ' + res.max_hours + ' hours.');
+  }
+  const minCourts = Math.min.apply(null, merged.map(function (s) { return resById(s.resource_id).courts || 1; }));
+  const gr = checkGuests(r.guests, v, SETTINGS.max_players_per_court * minCourts);
+  if (gr.error) return gr.error;
+  const taken = merged.filter(function (s, i) {
+    return bookings.some(function (b) { return active(b) && conflicts(b.resource_id, s.resource_id) && overlaps(b, s); }) ||
+      merged.some(function (o, j) { return j !== i && conflicts(o.resource_id, s.resource_id) && overlaps(o, s); });
+  });
+  if (taken.length) {
+    return err('SLOT_TAKEN', 'These times are already booked: ' + taken.map(function (s) { return sessionLabel(resById(s.resource_id), s); }).join('; ') + '.');
+  }
+  const guestIds = createGuests(gr.list, v);
+  const status = v.role === 'Family' ? 'Pending' : 'Approved';
+  const made = merged.map(function (s) {
+    return addBooking({ resource_id: s.resource_id, start: s.start, end: s.end, status: status, booker: v.member_id, guests: guestIds, pay_mode: 'BookerPays', notes: r.note || '' });
+  });
+  return ok({ bookings: made.map(function (b) { return detail(b, v); }) });
 }
 
 function mine(b, v) { return b.booker === v.member_id || b.players.some(function (p) { return p.member_id === v.member_id; }); }
@@ -413,6 +520,15 @@ function ownerAction(a, r, v) {
     if (r.status !== 'Active') {
       bookings.forEach(function (b) { if (b.booker === m.member_id && active(b) && b.start > nowLocal()) b.status = 'Cancelled'; });
     }
+    return ok({ member: m });
+  }
+  if (a === 'ownerSetMemberRole') {
+    const m = memById(r.member_id);
+    if (!m) return err('NOT_FOUND', 'We could not find that member.');
+    if (r.role !== 'Member' && r.role !== 'Family') return err('BAD_REQUEST', 'Role must be Member or Family.');
+    if (m.role === 'Owner') return err('FORBIDDEN', 'The owner account cannot be changed.');
+    if (m.status !== 'Active') return err('BAD_REQUEST', 'Approve this person before changing their role.');
+    m.role = r.role;
     return ok({ member: m });
   }
   if (a === 'ownerMembers') {

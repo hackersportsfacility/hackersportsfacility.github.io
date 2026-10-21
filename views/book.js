@@ -1,49 +1,220 @@
 import { call } from '../api.js';
-import { h, add, icon, clear, todayYmd, addDays, dowName, monthName, dayNum, fmtDay, timeRange, fmtRange, money, isEmail, fullName, termsLink } from '../util.js';
+import { h, add, icon, clear, parseLocal, todayYmd, addDays, dowName, monthName, dayNum, fmtDay, timeRange, fmtRange, money, isEmail, fullName, termsLink } from '../util.js';
 import { banner, skeleton, field, setBusy, openSheet } from '../ui.js';
 
-const KEYS = ['COURT1', 'COURT2', 'BOTH'];
+const GOLF = 'GOLF';
+const FALLBACK_COLUMNS = [
+  { resource_id: 'COURT1', name: 'Court 1', courts: 1 },
+  { resource_id: 'COURT2', name: 'Court 2', courts: 1 },
+  { resource_id: 'BOTH', name: 'Both Courts', courts: 2 },
+];
+// Remembered while the app is open, so the week and the Courts / Golf Sim choice survive tab switches.
 let selectedDate = '';
+let weekFrom = '';
+let viewTab = 'courts';
+
+// Owner and Family can book several sessions and look any distance ahead.
+function isPriv(me) {
+  const m = (me && me.member) || {};
+  return !!(me && me.unlimited_ahead === true) || m.is_owner === true || m.role === 'Owner' || m.role === 'Family';
+}
+
+// Merge sessions exactly like the engine: sort by resource then start; same resource and end === next start joins.
+export function mergeSessions(list) {
+  const s = list.map(function (x) { return { resource_id: x.resource_id, start: x.start, end: x.end }; });
+  s.sort(function (a, b) {
+    if (a.resource_id !== b.resource_id) return a.resource_id < b.resource_id ? -1 : 1;
+    return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
+  });
+  const out = [];
+  s.forEach(function (x) {
+    const last = out[out.length - 1];
+    if (last && last.resource_id === x.resource_id && last.end === x.start) last.end = x.end;
+    else out.push(x);
+  });
+  return out;
+}
+
+function hoursBetween(start, end) {
+  const a = parseLocal(start), b = parseLocal(end);
+  return ((b.h * 60 + b.mi) - (a.h * 60 + a.mi)) / 60;
+}
+
+function shortDay(ymd) { return dowName(ymd) + ' ' + monthName(ymd) + ' ' + dayNum(ymd); }
 
 export async function renderBook(root, ctx) {
   const state = ctx.state;
+  let me = state.me;
+  let priv = isPriv(me);
+  const today = todayYmd();
+  if (priv && (!weekFrom || weekFrom < today)) weekFrom = today;
+
   root.append(h('h1', { text: 'Book a court' }));
   const usageSlot = h('p', { class: 'usage' });
+  const noteSlot = h('p', { class: 'usage updating', role: 'status' });
   const errSlot = h('div');
+  const controlsSlot = h('div');
+  const navSlot = h('div');
   const pickerSlot = h('div', { class: 'daypicker-wrap' });
+  const hintSlot = h('p', { class: 'hint sel-hint', role: 'status' });
   const gridSlot = h('div');
-  root.append(usageSlot, errSlot, pickerSlot, gridSlot);
+  const selbar = h('div', { class: 'selbar', role: 'region', 'aria-label': 'Selected times', hidden: true });
+  root.append(usageSlot, noteSlot, errSlot, controlsSlot, navSlot, pickerSlot, hintSlot, gridSlot, selbar);
   gridSlot.append(skeleton(5));
 
+  let resources = state.resources || [];
+  let days = [];
+  let multi = false;
+  const picks = new Map(); // 'RES|start' -> { resource_id, start, end }
+  let navId = 0;
+
   function renderUsage() {
-    const me = state.me;
-    if (me.member.is_owner) usageSlot.textContent = 'Owner bookings have no weekly limit and are approved right away.';
+    if (priv) usageSlot.textContent = 'No weekly limit.';
     else usageSlot.textContent = me.week.used + ' of ' + me.week.limit + ' bookings used this week';
   }
+  function renderNote() {
+    if (state.fromCache) noteSlot.textContent = state.refreshFailed ? "Couldn't update. Showing saved times." : 'Updating…';
+    else noteSlot.textContent = '';
+  }
   renderUsage();
+  renderNote();
 
-  const resources = await getResources(state);
-  let days;
-  async function loadAvail() {
-    const data = await call('availability', {});
-    days = data.days || [];
+  // ---- data ----
+  function usable(a) {
+    if (!a || !a.days || !a.days.length) return false;
+    const young = (state.fromCache && !state.refreshFailed) || (Date.now() - state.availAt < 20000);
+    if (!young) return false;
+    return a.days[0].date === (priv ? weekFrom : today);
+  }
+  function setDays(data) {
+    const list = data.days || [];
+    days = priv ? list.slice(0, 7) : list;
     if (!days.some(function (d) { return d.date === selectedDate; })) selectedDate = days.length ? days[0].date : '';
   }
-  await loadAvail();
-  if (ctx.stale()) return;
-
-  function resName(key) {
-    const r = resources.filter(function (x) { return x.resource_id === key; })[0];
-    return r ? r.name : key === 'BOTH' ? 'Both Courts' : key === 'COURT1' ? 'Court 1' : 'Court 2';
+  async function loadAvail() {
+    const data = await call('availability', priv ? { from: weekFrom, days: 7 } : {});
+    state.avail = data;
+    state.availAt = Date.now();
+    setDays(data);
+  }
+  function prunePicks() {
+    Array.from(picks.keys()).forEach(function (pk) {
+      const p = picks.get(pk);
+      const day = days.filter(function (d) { return d.date === p.start.slice(0, 10); })[0];
+      if (!day) return; // another week: keep it
+      const b = day.blocks.filter(function (x) { return x.start === p.start; })[0];
+      if (!b || !b.slots || b.slots[p.resource_id] !== 'free') picks.delete(pk);
+    });
   }
 
+  if (usable(state.avail)) setDays(state.avail);
+  else {
+    await loadAvail();
+    if (ctx.stale()) return;
+  }
+  if (!resources.length) {
+    resources = state.resources = await call('resources', {});
+    if (ctx.stale()) return;
+  }
+
+  // ---- helpers ----
+  function resObj(key) { return resources.filter(function (x) { return x.resource_id === key; })[0]; }
+  function resName(key) {
+    const r = resObj(key) || FALLBACK_COLUMNS.filter(function (x) { return x.resource_id === key; })[0];
+    return r ? r.name : key;
+  }
+  function hasGolf() { return resources.some(function (r) { return r.resource_id === GOLF; }); }
+  function columns() {
+    const list = resources.length ? resources : FALLBACK_COLUMNS;
+    if (priv && hasGolf()) {
+      return list.filter(function (r) { return viewTab === 'golf' ? r.resource_id === GOLF : r.resource_id !== GOLF; });
+    }
+    return list;
+  }
   function dayLabel(date) {
-    const t = todayYmd();
-    if (date === t) return 'Today';
-    if (date === addDays(t, 1)) return 'Tomorrow';
+    if (date === today) return 'Today';
+    if (date === addDays(today, 1)) return 'Tomorrow';
     return dowName(date);
   }
+  function pkOf(key, start) { return key + '|' + start; }
 
+  // ---- controls: Courts | Golf Sim, Select multiple ----
+  function renderControls() {
+    clear(controlsSlot);
+    if (!priv) return;
+    const row = h('div', { class: 'ctl-row' });
+    if (hasGolf()) {
+      const seg = h('div', { class: 'segs', role: 'group', 'aria-label': 'Courts or Golf Simulator' });
+      [['courts', 'Courts'], ['golf', 'Golf Sim']].forEach(function (o) {
+        const on = viewTab === o[0];
+        seg.append(h('button', {
+          type: 'button', class: 'seg-btn' + (on ? ' on' : ''), 'aria-pressed': on ? 'true' : 'false', text: o[1],
+          onclick: function () { if (viewTab !== o[0]) { viewTab = o[0]; hintSlot.textContent = ''; renderControls(); renderGrid(); } },
+        }));
+      });
+      row.append(seg);
+    }
+    row.append(h('button', {
+      type: 'button', class: 'btn' + (multi ? ' primary' : ''), 'aria-pressed': multi ? 'true' : 'false',
+      onclick: function () {
+        multi = !multi;
+        if (!multi) picks.clear();
+        hintSlot.textContent = multi ? 'Tap open times to select them, or use Whole day for a full column.' : '';
+        renderControls(); renderGrid(); renderSelbar();
+      },
+    }, multi ? icon('check', 16) : null, 'Select multiple'));
+    controlsSlot.append(row);
+  }
+
+  // ---- week navigation (unlimited-ahead members) ----
+  const nav = { prev: null, next: null, input: null, range: null };
+  function buildNav() {
+    if (!priv) return;
+    nav.prev = h('button', { type: 'button', class: 'btn', onclick: function () { goWeek(addDays(weekFrom, -7) < today ? today : addDays(weekFrom, -7)); } }, '‹ Previous week');
+    nav.next = h('button', { type: 'button', class: 'btn', onclick: function () { goWeek(addDays(weekFrom, 7)); } }, 'Next week ›');
+    nav.input = h('input', {
+      type: 'date', min: today, value: weekFrom,
+      onchange: function () {
+        const v = nav.input.value;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return;
+        goWeek(v < today ? today : v);
+      },
+    });
+    nav.range = h('p', { class: 'weekrange', 'aria-live': 'polite' });
+    navSlot.append(
+      h('div', { class: 'weeknav' }, nav.prev, nav.next),
+      nav.range,
+      h('div', { class: 'jump' }, field('Jump to date', nav.input)));
+    syncNav();
+  }
+  function syncNav() {
+    if (!priv || !nav.prev) return;
+    nav.prev.disabled = weekFrom <= today;
+    nav.input.value = weekFrom;
+    nav.range.textContent = 'Week of ' + shortDay(weekFrom) + ' to ' + shortDay(addDays(weekFrom, 6));
+  }
+  async function goWeek(from) {
+    if (from === weekFrom) return;
+    const prev = weekFrom;
+    const id = ++navId;
+    weekFrom = from;
+    syncNav();
+    clear(errSlot);
+    clear(gridSlot);
+    gridSlot.append(skeleton(5));
+    try {
+      await loadAvail();
+    } catch (e) {
+      if (id !== navId || ctx.stale()) return;
+      weekFrom = prev;
+      syncNav();
+      errSlot.append(banner(e));
+    }
+    if (id !== navId || ctx.stale()) return;
+    renderPicker(); renderGrid(); renderSelbar();
+  }
+
+  // ---- day picker ----
   function renderPicker() {
     clear(pickerSlot);
     const list = h('div', { class: 'daypicker', role: 'group', 'aria-label': 'Choose a day' });
@@ -59,26 +230,43 @@ export async function renderBook(root, ctx) {
     if (sel && sel.scrollIntoView) { try { list.scrollLeft = sel.offsetLeft - 16; } catch (e) { /* ignore */ } }
   }
 
-  function renderGrid() {
+  // ---- grid ----
+  function renderGrid(focusPk) {
     clear(gridSlot);
     const day = days.filter(function (d) { return d.date === selectedDate; })[0];
     if (!day) { gridSlot.append(h('p', { class: 'empty', text: 'No times to show for this day.' })); return; }
+    const cols = columns();
     gridSlot.append(h('h2', { class: 'day-title', text: fmtDay(day.date) }));
-    const grid = h('div', { class: 'slotgrid', role: 'table', 'aria-label': 'Availability for ' + fmtDay(day.date) });
+    const grid = h('div', { class: 'slotgrid', role: 'table', 'aria-label': 'Availability for ' + fmtDay(day.date), style: '--cols:' + cols.length });
     const head = h('div', { class: 'srow shead', role: 'row' }, h('span', { class: 'tcol', role: 'columnheader', text: 'Time' }));
-    KEYS.forEach(function (k) { head.append(h('span', { class: 'ccol', role: 'columnheader', text: resName(k) })); });
+    cols.forEach(function (r) {
+      head.append(h('div', { class: 'ccol', role: 'columnheader' }, h('span', { text: r.name }), multi ? wholeButton(day, r) : null));
+    });
     grid.append(head);
     day.blocks.forEach(function (b) {
       const row = h('div', { class: 'srow', role: 'row' }, h('span', { class: 'tcol mono', role: 'rowheader', text: timeRange(b.start, b.end, false) }));
-      KEYS.forEach(function (k) { row.append(slotCell(b, k)); });
+      cols.forEach(function (r) { row.append(slotCell(b, r.resource_id)); });
       grid.append(row);
     });
     gridSlot.append(grid, legend());
+    if (focusPk) {
+      const el = gridSlot.querySelector('[data-pk="' + focusPk + '"]');
+      if (el && el.focus) { try { el.focus({ preventScroll: true }); } catch (e) { /* ignore */ } }
+    }
   }
 
   function slotCell(b, key) {
     const st = (b.slots && b.slots[key]) || 'busy';
     const label = resName(key) + ', ' + timeRange(b.start, b.end, true);
+    if (st === 'free' && multi) {
+      const pk = pkOf(key, b.start);
+      const on = picks.has(pk);
+      return h('div', { class: 'cw', role: 'cell' }, h('button', {
+        type: 'button', class: 'cell open' + (on ? ' selected' : ''), 'data-pk': pk, 'aria-pressed': on ? 'true' : 'false',
+        'aria-label': label + (on ? ', selected. Tap to deselect.' : ', open. Tap to select.'),
+        onclick: function () { togglePick(b, key); },
+      }, icon(on ? 'check' : 'plus', 14), h('span', { text: on ? 'Selected' : 'Open' })));
+    }
     if (st === 'free') {
       return h('button', {
         type: 'button', class: 'cell open', role: 'cell', 'aria-label': label + ', open. Tap to book.',
@@ -101,51 +289,180 @@ export async function renderBook(root, ctx) {
       h('li', null, h('span', { class: 'swatch past' }), 'Past'));
   }
 
+  // ---- multi-select ----
+  function togglePick(b, key) {
+    const pk = pkOf(key, b.start);
+    if (picks.has(pk)) picks.delete(pk);
+    else picks.set(pk, { resource_id: key, start: b.start, end: b.end });
+    hintSlot.textContent = '';
+    renderGrid(pk); renderSelbar();
+  }
+
+  // Blocks a "Whole day" press would select for one column: every open block, or for a capped
+  // resource (Golf Simulator) the earliest open contiguous run, up to max_hours.
+  function wholeDayBlocks(day, r) {
+    const key = r.resource_id;
+    const cap = Number(r.max_hours) || 0;
+    const open = function (b) { return b.slots && b.slots[key] === 'free'; };
+    if (!cap) return day.blocks.filter(open);
+    const run = [];
+    let total = 0;
+    for (let i = 0; i < day.blocks.length; i++) {
+      const b = day.blocks[i];
+      if (!open(b)) { if (run.length) break; continue; }
+      const hrs = hoursBetween(b.start, b.end);
+      if (total + hrs > cap) break;
+      run.push(b);
+      total += hrs;
+    }
+    return run;
+  }
+
+  function wholeButton(day, r) {
+    const blocks = wholeDayBlocks(day, r);
+    const all = blocks.length > 0 && blocks.every(function (b) { return picks.has(pkOf(r.resource_id, b.start)); });
+    const pk = 'whole|' + r.resource_id;
+    return h('button', {
+      type: 'button', class: 'whole', 'data-pk': pk, 'aria-pressed': all ? 'true' : 'false',
+      'aria-label': 'Whole day, ' + r.name + ', ' + fmtDay(day.date),
+      onclick: function () { toggleWhole(day, r); },
+    }, all ? icon('check', 14) : null, 'Whole day');
+  }
+
+  function toggleWhole(day, r) {
+    const key = r.resource_id;
+    const blocks = wholeDayBlocks(day, r);
+    const cap = Number(r.max_hours) || 0;
+    const all = blocks.length > 0 && blocks.every(function (b) { return picks.has(pkOf(key, b.start)); });
+    if (all) {
+      blocks.forEach(function (b) { picks.delete(pkOf(key, b.start)); });
+      hintSlot.textContent = '';
+    } else if (!blocks.length) {
+      hintSlot.textContent = 'Nothing is open in ' + r.name + ' on this day.';
+    } else {
+      if (cap) {
+        // Replace this column's picks for the day so the capped run stands alone.
+        Array.from(picks.keys()).forEach(function (pk) {
+          const p = picks.get(pk);
+          if (p.resource_id === key && p.start.slice(0, 10) === day.date) picks.delete(pk);
+        });
+      }
+      blocks.forEach(function (b) { picks.set(pkOf(key, b.start), { resource_id: key, start: b.start, end: b.end }); });
+      hintSlot.textContent = cap ? r.name + ' bookings can be up to ' + cap + ' hours.' : '';
+    }
+    renderGrid('whole|' + key); renderSelbar();
+  }
+
+  function renderSelbar() {
+    clear(selbar);
+    const n = picks.size;
+    const show = multi && n > 0;
+    selbar.hidden = !show;
+    gridSlot.classList.toggle('has-selbar', show);
+    if (!show) return;
+    selbar.append(h('div', { class: 'selbar-in' },
+      h('span', { class: 'selcount', 'aria-live': 'polite', text: n + ' selected' }),
+      h('button', { type: 'button', class: 'btn', text: 'Clear', onclick: function () { picks.clear(); hintSlot.textContent = ''; renderGrid(); renderSelbar(); } }),
+      h('button', { type: 'button', class: 'btn primary', text: 'Book selected', onclick: function () { openMulti(); } })));
+  }
+
+  // ---- opening the booking sheet ----
+  async function refreshAfterBooking() {
+    try { me = await ctx.loadMe(); renderUsage(); } catch (e) { /* ignore */ }
+    if (ctx.stale()) return;
+    try { await loadAvail(); prunePicks(); renderPicker(); renderGrid(); renderSelbar(); } catch (e) { /* ignore */ }
+  }
   function openBooking(block, key) {
-    bookingSheet(ctx, resources, resName, block, key, async function () {
-      try { await ctx.loadMe(); renderUsage(); } catch (e) { /* ignore */ }
-      try { await loadAvail(); renderPicker(); renderGrid(); } catch (e) { /* ignore */ }
+    bookingSheet(ctx, resources, resName, [{ resource_id: key, start: block.start, end: block.end }], { onChanged: refreshAfterBooking });
+  }
+  function openMulti() {
+    if (!picks.size) return;
+    bookingSheet(ctx, resources, resName, Array.from(picks.values()), {
+      onChanged: refreshAfterBooking,
+      onBooked: function () { picks.clear(); multi = false; hintSlot.textContent = ''; renderControls(); renderGrid(); renderSelbar(); },
     });
   }
 
+  // ---- live data landed (after cached start) ----
+  state.onFresh = function () {
+    if (ctx.stale()) return;
+    if (isPriv(state.me) !== priv) { ctx.go('#/book'); return; }
+    me = state.me;
+    resources = state.resources || resources;
+    renderUsage();
+    const a = state.avail;
+    if (a && a.days && a.days.length && !state.refreshFailed) {
+      const nd = priv ? a.days.slice(0, 7) : a.days;
+      if (!days.length || nd[0].date === days[0].date) {
+        days = nd;
+        if (!days.some(function (d) { return d.date === selectedDate; })) selectedDate = days[0].date;
+        prunePicks();
+      }
+    }
+    renderNote();
+    renderControls(); renderPicker(); renderGrid(); renderSelbar();
+  };
+
   clear(gridSlot);
+  buildNav();
+  renderControls();
   renderPicker();
   renderGrid();
+  renderSelbar();
 }
 
-async function getResources(state) {
-  if (!state.resources) state.resources = await call('resources', {});
-  return state.resources;
-}
-
-function bookingSheet(ctx, resources, resName, block, key, onChanged) {
+function bookingSheet(ctx, resources, resName, sessions, hooks) {
   const state = ctx.state, me = state.me, settings = me.settings;
-  const res = resources.filter(function (r) { return r.resource_id === key; })[0] || { courts: key === 'BOTH' ? 2 : 1, rate_per_hour: 0, block_hours: settings.block_hours };
-  const isOwner = me.member.is_owner;
-  const maxPlayers = settings.max_players_per_court * (res.courts || 1);
-  const total = isOwner ? 0 : res.rate_per_hour * res.block_hours;
+  const priv = isPriv(me);
+  const isOwner = me.member.is_owner === true || me.member.role === 'Owner';
+  const merged = priv ? mergeSessions(sessions) : sessions.slice();
+  const multi = merged.length > 1;
+  const resList = merged.map(function (s) {
+    return resources.filter(function (r) { return r.resource_id === s.resource_id; })[0] ||
+      { resource_id: s.resource_id, courts: s.resource_id === 'BOTH' ? 2 : 1, rate_per_hour: 0, block_hours: settings.block_hours };
+  });
+  const block = merged[0];
+  const key = block.resource_id;
+  const res = resList[0];
+  const maxPlayers = settings.max_players_per_court * Math.min.apply(null, resList.map(function (r) { return r.courts || 1; }));
+  const total = priv ? 0 : res.rate_per_hour * res.block_hours;
   const slotDate = block.start.slice(0, 10);
-  const inThisWeek = slotDate >= me.week.week_start && slotDate <= me.week.week_end;
-  const limitHit = !isOwner && inThisWeek && me.week.used >= me.week.limit;
-  const termsNeeded = !isOwner && !!me.terms && !me.terms.accepted;
+  const inThisWeek = !priv && slotDate >= me.week.week_start && slotDate <= me.week.week_end;
+  const limitHit = !priv && inThisWeek && me.week.used >= me.week.limit;
+  const termsNeeded = !priv && !!me.terms && !me.terms.accepted;
+  const capErrors = [];
+  if (priv) {
+    merged.forEach(function (s, i) {
+      const cap = Number(resList[i].max_hours) || 0;
+      if (cap && hoursBetween(s.start, s.end) > cap) {
+        const msg = resList[i].name + ' bookings can be up to ' + cap + ' hours.';
+        if (capErrors.indexOf(msg) === -1) capErrors.push(msg);
+      }
+    });
+  }
 
-  const sheet = openSheet('Request a booking', onChanged);
+  const sheet = openSheet(priv ? (isOwner ? 'Book' : (multi ? 'Request bookings' : 'Request a booking')) : 'Request a booking', hooks.onChanged);
   const body = sheet.body;
   const guests = []; // { member_id?, first_name, last_name, email?, phone?, isNew }
   let payMode = 'Split';
   let known = [];
   let addingNew = false;
 
-  const summary = h('div', { class: 'summary' },
-    h('strong', { text: resName(key) }),
-    h('span', { class: 'mono', text: fmtRange(block.start, block.end) }));
+  const summary = priv
+    ? h('div', { class: 'summary' }, h('ul', { class: 'sessions' }, merged.map(function (s) {
+      return h('li', null, h('strong', { text: resName(s.resource_id) }),
+        h('span', { class: 'mono', text: ' · ' + shortDay(s.start) + ' · ' + timeRange(s.start, s.end, true) }));
+    })))
+    : h('div', { class: 'summary' },
+      h('strong', { text: resName(key) }),
+      h('span', { class: 'mono', text: fmtRange(block.start, block.end) }));
 
   const playersSlot = h('div');
   const knownSlot = h('div');
   const newSlot = h('div');
   const priceSlot = h('div', { class: 'price', 'aria-live': 'polite' });
   const errSlot = h('div');
-  const submit = h('button', { class: 'btn primary block', type: 'button', text: 'Request booking' });
+  const submit = h('button', { class: 'btn primary block', type: 'button', text: priv ? (isOwner ? 'Book' : 'Request bookings') : 'Request booking' });
 
   const radios = [['Split', 'Everyone pays their share'], ['BookerPays', "I'll cover everyone"]].map(function (o, i) {
     const input = h('input', { type: 'radio', name: 'paymode', value: o[0], id: 'pm' + i, checked: o[0] === 'Split' });
@@ -227,7 +544,7 @@ function bookingSheet(ctx, resources, resName, block, key, onChanged) {
   function renderPrice() {
     clear(priceSlot);
     const n = guests.length + 1;
-    if (isOwner) { priceSlot.append(h('p', { text: 'Owner bookings are $0.00.' })); return; }
+    if (priv) { priceSlot.append(h('p', { text: 'Free for owner and family.' })); return; }
     if (payMode === 'BookerPays') {
       priceSlot.append(h('p', null, 'You pay ', h('strong', { class: 'mono', text: money(total) }), ' for the whole booking.'));
     } else {
@@ -240,15 +557,16 @@ function bookingSheet(ctx, resources, resName, block, key, onChanged) {
 
   function refresh() { renderPlayers(); renderKnown(); renderNew(); renderPrice(); }
 
-  const usageMsg = isOwner ? null : (me.week.used + ' of ' + me.week.limit + ' bookings used this week');
+  const usageMsg = priv ? 'No weekly limit.' : (me.week.used + ' of ' + me.week.limit + ' bookings used this week');
   add(body,
     summary,
-    usageMsg ? h('p', { class: 'usage', text: usageMsg }) : null,
+    h('p', { class: 'usage', text: usageMsg }),
     limitHit ? banner("You've used all of this week's bookings. Pick a day next week.") : null,
+    capErrors.map(function (m) { return banner(m); }),
     h('h3', { class: 'small-h', text: 'Players' }), playersSlot, knownSlot, newSlot,
-    h('fieldset', { class: 'paymode' }, h('legend', { text: 'Payment' }), h('div', { class: 'segs' }, radios)),
+    priv ? null : h('fieldset', { class: 'paymode' }, h('legend', { text: 'Payment' }), h('div', { class: 'segs' }, radios)),
     priceSlot,
-    h('p', { class: 'hint', text: "Payment isn't collected yet — you'll be notified when payments start." }),
+    priv ? null : h('p', { class: 'hint', text: "Payment isn't collected yet — you'll be notified when payments start." }),
     errSlot,
     termsNeeded ? termsGate() : submit);
   refresh();
@@ -261,7 +579,7 @@ function bookingSheet(ctx, resources, resName, block, key, onChanged) {
 
   call('knownPlayers', {}).then(function (list) { known = list || []; renderKnown(); }).catch(function () { /* quick-add is optional */ });
 
-  if (limitHit) submit.disabled = true;
+  if (limitHit || capErrors.length) submit.disabled = true;
   submit.addEventListener('click', async function () {
     clear(errSlot);
     setBusy(submit, true, 'Sending…');
@@ -269,23 +587,35 @@ function bookingSheet(ctx, resources, resName, block, key, onChanged) {
       return g.member_id ? { member_id: g.member_id } : { first_name: g.first_name, last_name: g.last_name, email: g.email, phone: g.phone };
     });
     try {
-      const out = await call('createBooking', { resource_id: key, start: block.start, pay_mode: payMode, guests: payload });
-      showDone(out.booking);
+      if (priv) {
+        const out = await call('createBookings', {
+          sessions: merged.map(function (s) { return { resource_id: s.resource_id, start: s.start, end: s.end }; }),
+          guests: payload,
+        });
+        showDone(out.bookings || []);
+      } else {
+        const out = await call('createBooking', { resource_id: key, start: block.start, pay_mode: payMode, guests: payload });
+        showDone([out.booking]);
+      }
     } catch (err) {
       errSlot.append(banner(err));
       if (err.code === 'TERMS_REQUIRED') errSlot.append(h('a', { class: 'btn primary block', href: termsLink('book'), text: 'Read and accept the terms' }));
       setBusy(submit, false);
-      if (err.code === 'SLOT_TAKEN' || err.code === 'LIMIT_REACHED') onChanged();
+      // The sheet stays open; the grid behind it refreshes so the selection can be adjusted.
+      if (err.code === 'SLOT_TAKEN' || err.code === 'LIMIT_REACHED') hooks.onChanged();
     }
   });
 
-  function showDone(b) {
+  function showDone(list) {
+    if (hooks.onBooked) hooks.onBooked();
+    const approved = list.length > 0 && list.every(function (b) { return b.status === 'Approved'; });
+    const plural = list.length > 1;
     clear(body);
-    sheet.setTitle(b.status === 'Approved' ? 'Booked' : 'Request sent');
+    sheet.setTitle(approved ? 'Booked' : (plural ? 'Requests sent' : 'Request sent'));
     body.append(h('div', { class: 'done' },
       h('div', { class: 'done-mark' }, icon('check', 28)),
-      h('p', { class: 'done-msg', text: b.status === 'Approved' ? 'Booked' : "Request sent — you'll get an email when it's approved" }),
-      h('p', { class: 'mono', text: b.resource_name + ' · ' + fmtRange(b.start, b.end) }),
+      h('p', { class: 'done-msg', text: approved ? 'Booked' : (plural ? "Requests sent — you'll get an email when they're approved" : "Request sent — you'll get an email when it's approved") }),
+      list.map(function (b) { return h('p', { class: 'mono', text: b.resource_name + ' · ' + fmtRange(b.start, b.end) }); }),
       h('div', { class: 'btn-row' },
         h('a', { class: 'btn primary', href: '#/bookings', onclick: function () { sheet.close(); }, text: 'View my bookings' }),
         h('button', { class: 'btn', type: 'button', onclick: function () { sheet.close(); }, text: 'Done' }))));

@@ -28,6 +28,11 @@ export function pill(status) {
   return h('span', { class: 'pill ' + (PILL[status] || 'muted'), text: status });
 }
 
+const ROLE_PILL = { Owner: 'court', Family: 'ok', Member: 'muted', Guest: 'warn' };
+export function rolePill(role) {
+  return h('span', { class: 'pill ' + (ROLE_PILL[role] || 'muted'), text: role || 'Member' });
+}
+
 export function setBusy(btn, busy, busyLabel) {
   if (busy) {
     btn.dataset.label = btn.textContent;

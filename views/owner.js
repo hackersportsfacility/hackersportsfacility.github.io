@@ -1,6 +1,12 @@
 import { call } from '../api.js';
-import { h, clear, fmtRange, fmtDay, timeRange, money, fullName } from '../util.js';
-import { banner, skeleton, pill, field, setBusy } from '../ui.js';
+import { h, clear, fmtRange, fmtDay, timeRange, money, fullName, parseLocal } from '../util.js';
+import { banner, skeleton, pill, rolePill, field, setBusy } from '../ui.js';
+
+function hoursLabel(start, end) {
+  const a = parseLocal(start), b = parseLocal(end);
+  const n = ((b.h * 60 + b.mi) - (a.h * 60 + a.mi)) / 60;
+  return n + (n === 1 ? ' hour' : ' hours');
+}
 
 export async function renderOwner(root, ctx) {
   const dashSlot = h('div');
@@ -71,12 +77,12 @@ export async function renderOwner(root, ctx) {
       const email = (b.booker && b.booker.email) || b.booker_email || '';
       const phone = (b.booker && b.booker.phone) || b.booker_phone || '';
       sec.append(h('article', { class: 'card booking' },
-        h('div', { class: 'bk-head' }, h('div', null, h('h3', { text: b.resource_name }), h('p', { class: 'mono', text: fmtRange(b.start, b.end) })), pill(b.status)),
+        h('div', { class: 'bk-head' }, h('div', null, h('h3', { text: b.resource_name }), h('p', { class: 'mono', text: fmtRange(b.start, b.end) + ' (' + hoursLabel(b.start, b.end) + ')' })), pill(b.status)),
         h('p', null, h('strong', { text: fullName(b.booker) }), email ? ' · ' + email : '', phone ? ' · ' + phone : ''),
         h('ul', { class: 'players detail' }, b.players.map(function (p) {
           return h('li', null,
             h('span', { class: 'pname' }, fullName(p), p.status !== 'Active' ? h('span', { class: 'tag warn', text: p.status === 'Pending' ? 'Guest needs approval' : p.status }) : null),
-            h('span', { class: 'mono share', text: money(p.share_amount) }));
+            h('span', { class: 'mono share', text: p.share_status === 'Waived' ? 'Waived' : money(p.share_amount) }));
         })),
         decisionRow({
           reasonLabel: 'Reason (optional)',
@@ -108,7 +114,7 @@ export async function renderOwner(root, ctx) {
     const ul = h('ul', { class: 'agenda' });
     d.upcoming.forEach(function (b) {
       ul.append(h('li', null,
-        h('span', { class: 'mono', text: fmtDay(b.start) + ' · ' + timeRange(b.start, b.end, false) }),
+        h('span', { class: 'mono', text: fmtDay(b.start) + ' · ' + timeRange(b.start, b.end, true) }),
         h('span', { text: b.resource_name + ' · ' + fullName(b.booker) })));
     });
     sec.append(ul);
@@ -189,11 +195,41 @@ export async function renderOwner(root, ctx) {
     const card = h('article', { class: 'card member-row' });
     const errSlot = h('div');
     const actions = h('div', { class: 'btn-row' });
+    const roleSlot = h('div');
+    function paintRole(mm) {
+      clear(roleSlot);
+      if (mm.status !== 'Active' || mm.role === 'Owner' || mm.role === 'Guest') return;
+      const sel = h('select', null, ['Member', 'Family'].map(function (r) { return h('option', { value: r, text: r, selected: r === mm.role }); }));
+      sel.addEventListener('change', function () {
+        const next = sel.value;
+        if (next === mm.role) return;
+        clear(errSlot);
+        const yes = h('button', { class: 'btn primary', type: 'button', text: 'Yes, make ' + next.toLowerCase() });
+        yes.addEventListener('click', async function () {
+          setBusy(yes, true, 'Saving…');
+          try {
+            const out = await call('ownerSetMemberRole', { member_id: mm.member_id, role: next });
+            paint(Object.assign({}, mm, out.member || { role: next }));
+          } catch (e) { clear(errSlot); errSlot.append(banner(e)); setBusy(yes, false); }
+        });
+        const note = next === 'Family'
+          ? ' They will book for free with no weekly limit, and their requests need your approval.'
+          : ' They will pay normal prices and the weekly limit applies again.';
+        clear(roleSlot);
+        roleSlot.append(h('div', { class: 'confirm', role: 'alertdialog', 'aria-label': 'Confirm role change' },
+          h('p', { text: 'Change ' + fullName(mm) + ' to ' + next + '?' + note }),
+          h('div', { class: 'btn-row' }, yes, h('button', { class: 'btn', type: 'button', text: 'No', onclick: function () { paintRole(mm); } }))));
+        yes.focus();
+      });
+      roleSlot.append(field('Role', sel));
+    }
     function paint(mm) {
       clear(card); clear(actions);
       card.append(
-        h('div', { class: 'bk-head' }, h('div', null, h('h3', { text: fullName(mm) }), h('p', { class: 'hint', text: [mm.role, mm.email, mm.phone].filter(Boolean).join(' · ') })), pill(mm.status)),
-        errSlot, actions);
+        h('div', { class: 'bk-head' }, h('div', null, h('h3', { text: fullName(mm) }), h('p', { class: 'hint', text: [mm.email, mm.phone].filter(Boolean).join(' · ') })),
+          h('div', { class: 'pills' }, rolePill(mm.role), pill(mm.status))),
+        roleSlot, errSlot, actions);
+      paintRole(mm);
       if (mm.role === 'Owner') return;
       const acts = [];
       if (mm.status === 'Active') acts.push(['Suspend', 'Suspended'], ['Revoke', 'Revoked']);
