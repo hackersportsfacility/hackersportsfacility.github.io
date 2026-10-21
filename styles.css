@@ -95,6 +95,8 @@ main { max-width: 720px; margin: 0 auto; padding: 8px 16px 40px; padding-left: m
 .btn[aria-busy="true"] { cursor: progress; }
 .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .link { background: none; border: 0; padding: 10px 4px; min-height: 44px; color: var(--court); font: 500 0.9rem var(--body); text-decoration: underline; cursor: pointer; }
+.check-row { display: flex; align-items: center; gap: 10px; min-height: 44px; margin: -4px 0 12px; font-size: 0.95rem; cursor: pointer; }
+.check-row input { width: 20px; height: 20px; margin: 0; flex: none; accent-color: var(--court); }
 .row-links { display: flex; justify-content: space-between; flex-wrap: wrap; margin-top: 8px; }
 .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 10px; border: 0; background: transparent; color: var(--fg); cursor: pointer; }
 .icon-btn.small { width: 36px; height: 36px; margin-left: auto; color: var(--muted); }
