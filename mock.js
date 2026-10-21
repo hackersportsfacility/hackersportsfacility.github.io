@@ -261,7 +261,12 @@ function acceptTerms(r, v) {
   return ok({ terms: termsStatus(v) });
 }
 
-function visibleResources(v) { return RESOURCES.filter(function (r) { return visibleTo(r, v); }); }
+// Owner and Family are never capped (matches the engine's Bk.capFor); max_hours applies to members only.
+function capFor(r, v) { return isPriv(v) ? null : r.max_hours; }
+function visibleResources(v) {
+  return RESOURCES.filter(function (r) { return visibleTo(r, v); })
+    .map(function (r) { return Object.assign({}, r, { max_hours: capFor(r, v) }); });
+}
 
 function startup(r, v) {
   const a = availability(r, v);
@@ -403,7 +408,7 @@ function createBookings(r, v) {
     const onGrid = function (p) { return p.mi === 0 && p.h >= SETTINGS.open_hour && p.h <= SETTINGS.close_hour && (p.h - SETTINGS.open_hour) % res.block_hours === 0; };
     if (s.start.slice(0, 10) !== s.end.slice(0, 10) || !onGrid(a) || !onGrid(b)) return err('BAD_REQUEST', 'That time is outside the booking blocks.');
     if (s.end <= s.start) return err('BAD_REQUEST', 'The end must be after the start.');
-    if (res.max_hours && hrsOf(s) > res.max_hours) return err('BAD_REQUEST', res.name + ' bookings can be up to ' + res.max_hours + ' hours.');
+    if (capFor(res, v) && hrsOf(s) > capFor(res, v)) return err('BAD_REQUEST', res.name + ' bookings can be up to ' + res.max_hours + ' hours.');
     if (s.start <= nowS) return err('OUT_OF_WINDOW', 'That time has already passed.');
     list.push({ resource_id: res.resource_id, start: s.start, end: s.end });
   }
@@ -422,7 +427,7 @@ function createBookings(r, v) {
   }
   for (let i = 0; i < merged.length; i++) {
     const res = resById(merged[i].resource_id);
-    if (res.max_hours && hrsOf(merged[i]) > res.max_hours) return err('BAD_REQUEST', res.name + ' bookings can be up to ' + res.max_hours + ' hours.');
+    if (capFor(res, v) && hrsOf(merged[i]) > capFor(res, v)) return err('BAD_REQUEST', res.name + ' bookings can be up to ' + res.max_hours + ' hours.');
   }
   const minCourts = Math.min.apply(null, merged.map(function (s) { return resById(s.resource_id).courts || 1; }));
   const gr = checkGuests(r.guests, v, SETTINGS.max_players_per_court * minCourts);
