@@ -2,8 +2,20 @@ import { call, isMock } from '../api.js';
 import { h, clear, isEmail } from '../util.js';
 import { banner, field, setBusy } from '../ui.js';
 
+// The email is remembered on this device only (localStorage), never sent anywhere else.
+const SAVED_EMAIL_KEY = 'hsf_saved_email';
+function savedEmail() {
+  try { return localStorage.getItem(SAVED_EMAIL_KEY) || ''; } catch (e) { return ''; }
+}
+function rememberEmail(on, value) {
+  try {
+    if (on) localStorage.setItem(SAVED_EMAIL_KEY, value);
+    else localStorage.removeItem(SAVED_EMAIL_KEY);
+  } catch (e) { /* storage unavailable: nothing to remember */ }
+}
+
 export async function renderSignin(root, ctx) {
-  let email = '';
+  let email = savedEmail();
   const card = h('section', { class: 'card narrow' });
   root.append(h('h1', { text: 'Sign in' }), card);
 
@@ -12,12 +24,15 @@ export async function renderSignin(root, ctx) {
     const slot = h('div');
     const input = h('input', { type: 'email', inputmode: 'email', autocomplete: 'email', autocapitalize: 'none', spellcheck: 'false', required: true, value: email });
     const btn = h('button', { class: 'btn primary block', type: 'submit', text: 'Send code' });
-    const form = h('form', { novalidate: true }, field('Email', input, 'We will email you a 6-digit code. No password needed.'), slot, btn);
+    const remember = h('input', { type: 'checkbox', id: 'remember-email', checked: true });
+    const rememberRow = h('label', { class: 'check-row', for: 'remember-email' }, remember, h('span', { text: 'Remember my email on this device' }));
+    const form = h('form', { novalidate: true }, field('Email', input, 'We will email you a 6-digit code. No password needed.'), rememberRow, slot, btn);
     form.addEventListener('submit', async function (e) {
       e.preventDefault();
       clear(slot);
       email = input.value.trim().toLowerCase();
       if (!isEmail(email)) { slot.append(banner('Enter the email address you signed up with.')); input.focus(); return; }
+      rememberEmail(remember.checked, email);
       setBusy(btn, true, 'Sending…');
       try {
         await call('requestCode', { email: email });
