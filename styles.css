@@ -177,8 +177,11 @@ select { background-image: linear-gradient(45deg, transparent 50%, var(--muted) 
 .weekrange { margin: 0 0 8px; font-size: 0.9rem; color: var(--muted); }
 .jump { margin-bottom: 8px; }
 input[type=date] { width: 100%; min-height: 44px; padding: 8px 12px; font: 400 1rem var(--body); color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; -webkit-appearance: none; appearance: none; }
-.shead .ccol { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 4px; }
-.whole { display: inline-flex; align-items: center; justify-content: center; gap: 3px; min-height: 44px; padding: 2px 4px; border-radius: 10px; border: 1px solid var(--court); background: var(--surface); color: var(--court); font: 600 0.72rem/1.15 var(--body); text-transform: none; letter-spacing: 0; cursor: pointer; }
+/* Column names sit just above a shared bottom line, so every "Whole day" button lines up
+   even when one name wraps to two lines (e.g. "Both Courts"). */
+.shead .ccol { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-end; gap: 4px; }
+.shead .ccol > span { flex: 1; display: flex; align-items: flex-end; justify-content: center; }
+.whole { display: inline-flex; align-items: center; justify-content: center; gap: 3px; min-height: 48px; padding: 2px 4px; border-radius: 10px; border: 1px solid var(--court); background: var(--surface); color: var(--court); font: 600 0.72rem/1.15 var(--body); text-transform: none; letter-spacing: 0; cursor: pointer; }
 .whole[aria-pressed="true"] { background: var(--court); color: var(--on-court); }
 .cw { display: flex; }
 .cw .cell { flex: 1; min-width: 0; }
