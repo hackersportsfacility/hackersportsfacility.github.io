@@ -1,5 +1,5 @@
 import { call } from '../api.js';
-import { h, add, icon, clear, todayYmd, addDays, dowName, monthName, dayNum, fmtDay, timeRange, fmtRange, money, isEmail, fullName } from '../util.js';
+import { h, add, icon, clear, todayYmd, addDays, dowName, monthName, dayNum, fmtDay, timeRange, fmtRange, money, isEmail, fullName, termsLink } from '../util.js';
 import { banner, skeleton, field, setBusy, openSheet } from '../ui.js';
 
 const KEYS = ['COURT1', 'COURT2', 'BOTH'];
@@ -127,6 +127,7 @@ function bookingSheet(ctx, resources, resName, block, key, onChanged) {
   const slotDate = block.start.slice(0, 10);
   const inThisWeek = slotDate >= me.week.week_start && slotDate <= me.week.week_end;
   const limitHit = !isOwner && inThisWeek && me.week.used >= me.week.limit;
+  const termsNeeded = !isOwner && !!me.terms && !me.terms.accepted;
 
   const sheet = openSheet('Request a booking', onChanged);
   const body = sheet.body;
@@ -248,8 +249,15 @@ function bookingSheet(ctx, resources, resName, block, key, onChanged) {
     h('fieldset', { class: 'paymode' }, h('legend', { text: 'Payment' }), h('div', { class: 'segs' }, radios)),
     priceSlot,
     h('p', { class: 'hint', text: "Payment isn't collected yet — you'll be notified when payments start." }),
-    errSlot, submit);
+    errSlot,
+    termsNeeded ? termsGate() : submit);
   refresh();
+
+  function termsGate() {
+    return h('div', { class: 'terms-gate' },
+      banner('Before your first booking, please read the Booking and Payment Terms all the way through and accept them.'),
+      h('a', { class: 'btn primary block', href: termsLink('book'), text: 'Read and accept the terms' }));
+  }
 
   call('knownPlayers', {}).then(function (list) { known = list || []; renderKnown(); }).catch(function () { /* quick-add is optional */ });
 
@@ -265,6 +273,7 @@ function bookingSheet(ctx, resources, resName, block, key, onChanged) {
       showDone(out.booking);
     } catch (err) {
       errSlot.append(banner(err));
+      if (err.code === 'TERMS_REQUIRED') errSlot.append(h('a', { class: 'btn primary block', href: termsLink('book'), text: 'Read and accept the terms' }));
       setBusy(submit, false);
       if (err.code === 'SLOT_TAKEN' || err.code === 'LIMIT_REACHED') onChanged();
     }

@@ -1,5 +1,5 @@
 import { call, clearToken } from '../api.js';
-import { h, fullName } from '../util.js';
+import { h, fullName, termsLink, fmtDate } from '../util.js';
 import { banner, setBusy } from '../ui.js';
 
 function platform() {
@@ -13,6 +13,26 @@ function isInstalled() {
   try {
     return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
   } catch (e) { return false; }
+}
+
+function termsBlock(me) {
+  const t = me.terms || { accepted: false, version: 1 };
+  if (me.member.is_owner) {
+    return h('div', null,
+      h('p', { class: 'hint', text: 'Fees, payments, cancellations and credits. As the owner, you don’t need to accept these.' }),
+      h('a', { class: 'btn', href: termsLink('account'), text: 'Read the terms' }));
+  }
+  if (t.accepted) {
+    return h('div', null,
+      h('p', null, h('span', { class: 'pill ok', text: 'Accepted' }),
+        ' Version ' + t.version + (t.accepted_at ? ', accepted ' + fmtDate(t.accepted_at) : '') + '.'),
+      h('a', { class: 'btn', href: termsLink('account'), text: 'Read the terms' }));
+  }
+  return h('div', null,
+    h('p', null, h('span', { class: 'pill warn', text: 'Needed' }),
+      t.accepted_version ? ' The terms have been updated. Please read and accept the new version.' : ' Please read and accept these before booking.'),
+    h('p', { class: 'hint', text: 'Fees, payments, cancellations and credits. Scroll to the end of the terms and check the box to accept.' }),
+    h('a', { class: 'btn primary', href: termsLink('account'), text: 'Read and accept the terms' }));
 }
 
 export async function renderAccount(root, ctx) {
@@ -47,9 +67,7 @@ export async function renderAccount(root, ctx) {
       h('h2', { text: fullName(m) }),
       h('p', { class: 'hint', text: m.email + (m.is_owner ? ' · Owner' : '') })),
     h('section', { class: 'card' }, h('h2', { text: 'Waiver' }), waiver),
-    h('section', { class: 'card' }, h('h2', { text: 'Booking and Payment Terms' }),
-      h('p', { class: 'hint', text: 'Fees, payments, cancellations and credits. You accept these when you save a card or pay.' }),
-      h('a', { class: 'btn', href: 'terms.html', text: 'Read the terms' })),
+    h('section', { class: 'card' }, h('h2', { text: 'Booking and Payment Terms' }), termsBlock(me)),
     h('section', { class: 'card' }, h('h2', { text: 'Add to Home Screen' }),
       h('p', { class: 'hint', text: 'Open the app like any other app, straight from your home screen.' }), steps),
     errSlot,
