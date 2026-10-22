@@ -256,3 +256,25 @@ input[type=date] { width: 100%; min-height: 44px; padding: 8px 12px; font: 400 1
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* ---------- phase 2A: in-app waiver ---------- */
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.agreement { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; overflow-wrap: anywhere; }
+.agreement .ag-title { margin-top: 0; }
+.agreement .ag-sub { font-weight: 600; }
+.agreement .ag-box { background: var(--court-soft); border: 1px solid var(--court); border-radius: 8px; padding: 10px 12px; font-weight: 600; font-size: 0.85rem; }
+.agreement h3 { color: var(--court); margin: 20px 0 6px; }
+.agreement p { line-height: 1.6; }
+.agreement ul { padding-left: 22px; margin: 0 0 10px; }
+.agreement li { margin-bottom: 6px; line-height: 1.55; }
+.agreement-end { height: 1px; }
+.sign-form fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.sign-fields:disabled { opacity: 0.55; }
+.gate-note { color: var(--muted); font-size: 0.9rem; }
+.sign-fields:not(:disabled) + .gate-note, .sign-form .gate-note { margin-bottom: 12px; }
+fieldset.guardian { border: 1px solid var(--court) !important; border-radius: 10px; padding: 12px !important; margin: 4px 0 14px !important; background: var(--court-soft); }
+fieldset.guardian[hidden] { display: none; }
+fieldset.guardian legend { font-weight: 600; padding: 0 6px; }
+.agree-row { align-items: flex-start; margin: 4px 0 12px; }
+.agree-row input { margin-top: 2px; }
+.wv-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

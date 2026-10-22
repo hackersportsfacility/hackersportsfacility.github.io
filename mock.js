@@ -208,6 +208,10 @@ function run(req) {
       case 'cancelBooking': return cancelBooking(req, v);
       case 'knownPlayers': return knownPlayers(v);
       case 'acceptTerms': return acceptTerms(req, v);
+      case 'waiverText': return ok(WAIVER_TEXT);
+      case 'signWaiver': return signWaiver(req, v);
+      case 'resendGuardianEmail': return resendGuardianEmail(v);
+      case 'mockGuardianSign': return mockGuardianSign(v);
       case 'signOut': return ok({ signed_out: true });
     }
     if (a.indexOf('owner') === 0) {
@@ -275,6 +279,105 @@ function acceptTerms(r, v) {
   return ok({ terms: termsStatus(v) });
 }
 
+// ---- waiver (Phase 2A) ----
+const WAIVER_VERSION = 1;
+const WAIVER_TEXT = {
+  version: WAIVER_VERSION,
+  effective: 'October 20, 2026',
+  title: 'HACKER SPORTS FACILITY',
+  subtitle: 'DEMO TEXT ONLY. Participant Agreement, Assumption of Risk, Release and Waiver of Liability, Indemnity, and Arbitration Agreement',
+  intro: 'DEMO TEXT: THIS IS SAMPLE WORDING FOR THE DEMO AND IS NOT THE REAL AGREEMENT. PLEASE READ CAREFULLY BEFORE SIGNING. THE REAL AGREEMENT INCLUDES A RELEASE OF LIABILITY, BINDING ARBITRATION AND A JURY TRIAL WAIVER.',
+  sections: [
+    { heading: '1. Demo: Parties and Definitions', body: 'This is demo text. In the real app this section defines the Facility, the Owner and the Released Parties.\n\n• "Facility" means Hacker Sports Facility.\n• "Owner" means 3450 Centennial Rd LLC.\n• "Activities" means any use of the Facility.' },
+    { heading: '2. Demo: Assumption of Risk', body: 'Sample paragraph. Playing sports involves risk of injury. This demo section is long enough to scroll so you can try the scroll-to-end step.\n\nSecond sample paragraph. I understand that no staff are present and that I am responsible for my own safety.\n\n• Slips, trips and falls\n• Collisions with people or equipment\n• Being struck by balls or paddles\n• Heat-related illness and other medical events' },
+    { heading: '3. Demo: Release of Liability', body: 'Sample release language. In the real agreement, the participant releases the Released Parties from claims, including claims arising from their negligence, to the fullest extent permitted by Ohio law.\n\nSample paragraph about arbitration and the jury trial waiver.' },
+    { heading: '4. Demo: Minors', body: 'If the Participant is under 18, a parent or legal guardian must sign this Agreement. By signing, the parent or guardian agrees on behalf of the minor and on their own behalf.' },
+    { heading: '5. Demo: Electronic Signature', body: 'Typing my name and selecting "I agree" is my legal signature. A copy will be emailed to me.' },
+  ],
+};
+const waivers = [];
+let seqW = 0;
+const RESEND_MIN_MS = 10 * 60 * 1000;
+
+function awaitingRow(v) {
+  return waivers.filter(function (w) { return w.member_id === v.member_id && w.status === 'AwaitingGuardian'; })[0];
+}
+function waiverStatus(v) {
+  if (v.waiver_version_signed >= WAIVER_VERSION) return { status: 'signed', version: WAIVER_VERSION };
+  const w = awaitingRow(v);
+  if (w) return { status: 'awaiting_guardian', guardian_email: w.guardian_email, version: WAIVER_VERSION };
+  return { status: 'none', version: WAIVER_VERSION };
+}
+function plusDays(n) { return addDays(todayYmd(), n) + 'T' + nowLocal().slice(11); }
+
+// Same rules as the engine's Waivers.parseDob: MM/DD/YYYY, a real date.
+function parseDobMock(s) {
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(String(s || ''));
+  if (!m) return null;
+  const mo = +m[1], d = +m[2], y = +m[3], dt = new Date(y, mo - 1, d);
+  if (y < 1900 || dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
+  return { y: y, mo: mo, d: d };
+}
+
+function signWaiver(r, v) {
+  const need = ['participant_name', 'date_of_birth', 'phone', 'emergency_contact_name', 'emergency_contact_phone', 'signature'];
+  for (let i = 0; i < need.length; i++) if (!String(r[need[i]] || '').trim()) return err('BAD_REQUEST', 'Please fill in every field.');
+  if (Number(r.version) !== WAIVER_VERSION) return err('BAD_REQUEST', 'The agreement was updated. Please reload and read the latest version.');
+  if (r.agreed !== true) return err('BAD_REQUEST', 'Please check the box to agree to the Participant Agreement.');
+  const dob = parseDobMock(r.date_of_birth);
+  const t = parseLocal(todayYmd());
+  if (!dob) return err('BAD_REQUEST', 'Enter the date of birth as MM/DD/YYYY.');
+  if (dob.y * 10000 + dob.mo * 100 + dob.d > t.y * 10000 + t.mo * 100 + t.d) return err('BAD_REQUEST', 'The date of birth cannot be in the future.');
+  let age = t.y - dob.y;
+  if (t.mo < dob.mo || (t.mo === dob.mo && t.d < dob.d)) age--;
+  const minor = age < 18;
+  const g = r.guardian || {};
+  if (minor) {
+    if (!String(g.name || '').trim() || !String(g.email || '').trim() || !String(g.relationship || '').trim()) {
+      return err('BAD_REQUEST', 'A parent or guardian name, email and relationship are required.');
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(g.email)) return err('BAD_REQUEST', 'That parent or guardian email address does not look right.');
+    if (String(g.email).trim().toLowerCase() === v.email.toLowerCase()) return err('BAD_REQUEST', 'A parent or guardian must use their own email address.');
+  }
+  if (v.waiver_version_signed >= WAIVER_VERSION) return err('BAD_REQUEST', 'Your waiver is already on file.');
+  const old = awaitingRow(v);
+  if (old) old.status = 'Expired';
+  seqW++;
+  const w = {
+    waiver_id: 'W' + ('0000' + seqW).slice(-4), member_id: v.member_id, minor_name: '', guardian_name: '', guardian_email: '',
+    status: minor ? 'AwaitingGuardian' : 'Signed', requested_at: nowLocal(), link_expires_at: plusDays(14), reminder_sent: false, last_resend: 0,
+  };
+  waivers.push(w);
+  if (minor) {
+    w.minor_name = String(r.participant_name).trim();
+    w.guardian_name = String(g.name).trim();
+    w.guardian_email = String(g.email).trim();
+    return ok({ status: 'AwaitingGuardian', guardian_email: w.guardian_email, waiver: waiverStatus(v) });
+  }
+  v.waiver_version_signed = WAIVER_VERSION;
+  if (!v.date_of_birth) v.date_of_birth = String(r.date_of_birth);
+  return ok({ status: 'Signed', waiver: waiverStatus(v) });
+}
+
+function resendGuardianEmail(v) {
+  const w = awaitingRow(v);
+  if (!w) return err('BAD_REQUEST', 'There is no waiver waiting for a parent or guardian.');
+  if (Date.now() - w.last_resend < RESEND_MIN_MS) return err('RATE_LIMITED', 'We just sent that email. Please wait about 10 minutes before sending it again.');
+  w.last_resend = Date.now();
+  if (w.link_expires_at < nowLocal()) w.link_expires_at = plusDays(14);
+  return ok({ guardian_email: w.guardian_email });
+}
+
+// Demo only: stands in for the parent opening the emailed link and signing.
+function mockGuardianSign(v) {
+  const w = awaitingRow(v);
+  if (!w) return err('BAD_REQUEST', 'There is no waiver waiting for a parent or guardian.');
+  w.status = 'Signed';
+  v.waiver_version_signed = WAIVER_VERSION;
+  v.is_minor = true; v.guardian_name = w.guardian_name; v.guardian_email = w.guardian_email;
+  return ok({ waiver: waiverStatus(v) });
+}
+
 // Owner and Family are never capped (matches the engine's Bk.capFor); max_hours applies to members only.
 function capFor(r, v) { return isPriv(v) ? null : r.max_hours; }
 function visibleResources(v) {
@@ -291,12 +394,13 @@ function startup(r, v) {
 function me(v) {
   const t = todayYmd(), ws = mondayOf(t), priv = isPriv(v);
   return ok({
-    member: summary(v),
+    member: Object.assign(summary(v), { phone: v.phone, emergency_contact_name: v.emergency_contact_name, emergency_contact_phone: v.emergency_contact_phone, date_of_birth: v.date_of_birth }),
     max_slots: maxSlotsFor(v),
     week: { used: weekCount(v.member_id, t), limit: priv ? null : WEEKLY_LIMIT, week_start: ws, week_end: addDays(ws, 6) },
     book_ahead_days: priv ? null : BOOK_AHEAD,
     unlimited_ahead: priv,
     waiver_on_file: v.waiver_version_signed >= 1,
+    waiver: waiverStatus(v),
     waiver_form_url: 'https://example.com/waiver-demo',
     terms: termsStatus(v),
     settings: Object.assign({}, SETTINGS),
@@ -533,6 +637,10 @@ function ownerAction(a, r, v) {
         active_members: members.filter(function (m) { return m.status === 'Active'; }).length,
         bookings_this_week: bookings.filter(function (b) { const d = b.start.slice(0, 10); return active(b) && d >= ws && d <= we; }).length,
       },
+      waivers_awaiting_guardian: waivers.filter(function (w) { return w.status === 'AwaitingGuardian'; }).map(function (w) {
+        return { waiver_id: w.waiver_id, member_id: w.member_id, minor_name: w.minor_name, guardian_name: w.guardian_name, guardian_email: w.guardian_email,
+          requested_at: w.requested_at, link_expires_at: w.link_expires_at, reminder_sent: w.reminder_sent };
+      }),
       email_quota_remaining: 87,
     });
   }

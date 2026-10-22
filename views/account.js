@@ -1,6 +1,7 @@
 import { call, clearToken } from '../api.js';
 import { h, fullName, termsLink, fmtDate } from '../util.js';
 import { banner, setBusy } from '../ui.js';
+import { waiverOf, resendGuardian } from './waiver.js';
 
 function platform() {
   const ua = navigator.userAgent || '';
@@ -40,16 +41,33 @@ function termsBlock(me) {
     h('a', { class: 'btn primary', href: termsLink('account'), text: 'Read and accept the terms' }));
 }
 
+function waiverBlock(me) {
+  const w = waiverOf(me);
+  if (w.status === 'signed') {
+    return h('div', null,
+      h('p', null, h('span', { class: 'pill ok', text: 'On file' }), ' Your waiver is on file.'),
+      h('a', { class: 'btn', href: '#/waiver', text: 'Read the agreement' }));
+  }
+  if (w.status === 'awaiting_guardian') {
+    const slot = h('div');
+    const resend = h('button', { class: 'btn', type: 'button', text: 'Resend email' });
+    resend.addEventListener('click', function () { resendGuardian(resend, slot); });
+    return h('div', null,
+      h('p', null, h('span', { class: 'pill warn', text: 'Pending' }), ' Waiting for parent/guardian (' + (w.guardian_email || 'email sent') + ')'),
+      slot,
+      h('div', { class: 'btn-row' }, resend, h('a', { class: 'btn', href: '#/waiver', text: 'View status' })));
+  }
+  return h('div', null,
+    h('p', null, h('span', { class: 'pill warn', text: 'Needed' }), ' We do not have your waiver yet.'),
+    h('a', { class: 'btn primary', href: '#/waiver', text: 'Sign the waiver' }));
+}
+
 export async function renderAccount(root, ctx) {
   const me = ctx.state.me;
   const m = me.member;
   const errSlot = h('div');
 
-  const waiver = me.waiver_on_file
-    ? h('p', null, h('span', { class: 'pill ok', text: 'On file' }), ' Your waiver is on file.')
-    : h('div', null,
-      h('p', null, h('span', { class: 'pill warn', text: 'Needed' }), ' We do not have your waiver yet.'),
-      me.waiver_form_url ? h('a', { class: 'btn primary', href: me.waiver_form_url, target: '_blank', rel: 'noopener', text: 'Sign the waiver' }) : null);
+  const waiver = waiverBlock(me);
 
   const p = platform();
   let steps;

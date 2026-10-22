@@ -1,6 +1,7 @@
 import { call } from '../api.js';
 import { h, add, icon, clear, parseLocal, todayYmd, addDays, dowName, monthName, dayNum, mondayOf, fmtDay, timeRange, fmtRange, money, isEmail, fullName, termsLink } from '../util.js';
 import { banner, skeleton, field, setBusy, openSheet } from '../ui.js';
+import { waiverOf } from './waiver.js';
 
 const GOLF = 'GOLF';
 const FALLBACK_COLUMNS = [
@@ -56,6 +57,7 @@ export async function renderBook(root, ctx) {
   if (priv && (!weekFrom || weekFrom < today)) weekFrom = today;
 
   root.append(h('h1', { text: 'Book a court' }));
+  const waiverSlot = h('div');
   const usageSlot = h('p', { class: 'usage' });
   const noteSlot = h('p', { class: 'usage updating', role: 'status' });
   const errSlot = h('div');
@@ -66,7 +68,7 @@ export async function renderBook(root, ctx) {
   const hintSlot = h('p', { class: 'hint sel-hint', role: 'status', text: DEFAULT_HINT });
   const gridSlot = h('div');
   const selbar = h('div', { class: 'selbar', role: 'region', 'aria-label': 'Selected times', hidden: true });
-  root.append(usageSlot, noteSlot, errSlot, controlsSlot, navSlot, pickerSlot, hintSlot, gridSlot, selbar);
+  root.append(waiverSlot, usageSlot, noteSlot, errSlot, controlsSlot, navSlot, pickerSlot, hintSlot, gridSlot, selbar);
   gridSlot.append(skeleton(5));
 
   let resources = state.resources || [];
@@ -86,8 +88,17 @@ export async function renderBook(root, ctx) {
     if (state.fromCache) noteSlot.textContent = state.refreshFailed ? "Couldn't update. Showing saved times." : 'Updating…';
     else noteSlot.textContent = '';
   }
+  // Nothing is blocked by the waiver (Phase 2A); this only nudges.
+  function renderWaiverNote() {
+    clear(waiverSlot);
+    if (waiverOf(me).status === 'signed') return;
+    const b = banner('Please sign the Participant Agreement before your first visit.', 'info');
+    b.append(h('a', { href: '#/waiver', text: 'Sign now' }));
+    waiverSlot.append(b);
+  }
   renderUsage();
   renderNote();
+  renderWaiverNote();
 
   // ---- data ----
   function usable(a) {
@@ -407,7 +418,7 @@ export async function renderBook(root, ctx) {
 
   // ---- opening the booking sheet ----
   async function refreshAfterBooking() {
-    try { me = await ctx.loadMe(); renderUsage(); } catch (e) { /* ignore */ }
+    try { me = await ctx.loadMe(); renderUsage(); renderWaiverNote(); } catch (e) { /* ignore */ }
     if (ctx.stale()) return;
     try { await loadAvail(); prunePicks(); renderPicker(); renderGrid(); renderSelbar(); } catch (e) { /* ignore */ }
   }
@@ -426,6 +437,7 @@ export async function renderBook(root, ctx) {
     me = state.me;
     resources = state.resources || resources;
     renderUsage();
+    renderWaiverNote();
     const a = state.avail;
     if (a && a.days && a.days.length && !state.refreshFailed) {
       const nd = priv ? a.days.slice(0, 7) : a.days;

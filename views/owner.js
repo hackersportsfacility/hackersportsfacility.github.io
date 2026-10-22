@@ -1,5 +1,5 @@
 import { call } from '../api.js';
-import { h, clear, fmtRange, fmtDay, timeRange, money, fullName, parseLocal } from '../util.js';
+import { h, clear, fmtRange, fmtDay, fmtDate, timeRange, money, fullName, parseLocal } from '../util.js';
 import { banner, skeleton, pill, rolePill, field, setBusy } from '../ui.js';
 
 function hoursLabel(start, end) {
@@ -26,7 +26,7 @@ export async function renderOwner(root, ctx) {
     }
     if (ctx.stale()) return;
     clear(dashSlot);
-    dashSlot.append(stats(d), pendingBookings(d), pendingMembers(d), upcoming(d));
+    dashSlot.append(stats(d), pendingBookings(d), pendingMembers(d), awaitingGuardian(d), upcoming(d));
   }
 
   function stats(d) {
@@ -104,6 +104,20 @@ export async function renderOwner(root, ctx) {
           reasonLabel: 'Note (optional)',
           send: function (decision, note) { return call('ownerDecideMember', { member_id: m.member_id, decision: decision, note: note || undefined }); },
         })));
+    });
+    return sec;
+  }
+
+  function awaitingGuardian(d) {
+    const list = d.waivers_awaiting_guardian || [];
+    if (!list.length) return null;
+    const sec = h('section', null, h('h2', { text: 'Waiting for parent/guardian signature (' + list.length + ')' }));
+    list.forEach(function (w) {
+      sec.append(h('article', { class: 'card booking' },
+        h('div', { class: 'bk-head' }, h('div', null, h('h3', { text: w.minor_name }),
+          h('p', { class: 'hint', text: 'Guardian: ' + [w.guardian_name, w.guardian_email].filter(Boolean).join(' · ') })),
+          h('span', { class: 'pill ' + (w.reminder_sent ? 'muted' : 'warn'), text: w.reminder_sent ? 'Reminder sent' : 'No reminder yet' })),
+        h('p', { class: 'hint', text: 'Requested ' + (w.requested_at ? fmtDate(w.requested_at) : '') + (w.link_expires_at ? ' · link expires ' + fmtDate(w.link_expires_at) : '') })));
     });
     return sec;
   }

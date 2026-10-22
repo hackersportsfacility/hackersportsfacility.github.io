@@ -7,6 +7,7 @@ import { renderBook } from './views/book.js';
 import { renderBookings } from './views/bookings.js';
 import { renderOwner } from './views/owner.js';
 import { renderAccount } from './views/account.js';
+import { renderWaiver } from './views/waiver.js';
 
 // avail: last availability payload ({ days }); fromCache: true while showing cached data until the live
 // startup call lands; refreshFailed: the live refresh failed; onFresh: set by the Book view.
@@ -21,6 +22,7 @@ const ROUTES = {
   bookings: { title: 'My bookings', render: renderBookings },
   owner: { title: 'Owner', render: renderOwner, owner: true },
   account: { title: 'Account', render: renderAccount },
+  waiver: { title: 'Participant Agreement', render: renderWaiver },
 };
 
 const els = {};
