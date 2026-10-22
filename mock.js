@@ -464,9 +464,15 @@ function createBookings(r, v) {
   const minCourts = Math.min.apply(null, merged.map(function (s) { return resById(s.resource_id).courts || 1; }));
   const gr = checkGuests(r.guests, v, SETTINGS.max_players_per_court * minCourts);
   if (gr.error) return gr.error;
-  const taken = merged.filter(function (s, i) {
-    return bookings.some(function (b) { return active(b) && conflicts(b.resource_id, s.resource_id) && overlaps(b, s); }) ||
-      merged.some(function (o, j) { return j !== i && conflicts(o.resource_id, s.resource_id) && overlaps(o, s); });
+  const label = function (s) { return sessionLabel(resById(s.resource_id), s); };
+  const selfClash = merged.filter(function (s, i) {
+    return merged.some(function (o, j) { return j !== i && conflicts(o.resource_id, s.resource_id) && overlaps(o, s); });
+  });
+  if (selfClash.length) {
+    return err('SLOT_TAKEN', 'Some of your selected times overlap each other (Both Courts includes Court 1 and Court 2): ' + selfClash.map(label).join('; ') + '. Please unselect one of them.');
+  }
+  const taken = merged.filter(function (s) {
+    return bookings.some(function (b) { return active(b) && conflicts(b.resource_id, s.resource_id) && overlaps(b, s); });
   });
   if (taken.length) {
     return err('SLOT_TAKEN', 'These times are already booked: ' + taken.map(function (s) { return sessionLabel(resById(s.resource_id), s); }).join('; ') + '.');

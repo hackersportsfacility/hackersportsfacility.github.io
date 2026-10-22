@@ -283,15 +283,50 @@ export async function renderBook(root, ctx) {
   }
 
   // ---- tap to select ----
+
+  // Resources that can't be booked at the same time as each other. Both Courts covers
+  // Court 1 and Court 2. Uses the engine's conflicts_with when it sends one, else this map.
+  const BUILTIN_CLASH = { BOTH: ['COURT1', 'COURT2'], COURT1: ['BOTH'], COURT2: ['BOTH'] };
+  function clashList(key) {
+    const r = resObj(key);
+    if (r && Array.isArray(r.conflicts_with)) return r.conflicts_with;
+    return BUILTIN_CLASH[key] || [];
+  }
+  function clashes(a, b) {
+    return a !== b && (clashList(a).indexOf(b) !== -1 || clashList(b).indexOf(a) !== -1);
+  }
+
+  // Unchecks picks that clash with key at an overlapping time. Returns the names it unchecked.
+  function dropClashes(key, start, end) {
+    const names = [];
+    Array.from(picks.keys()).forEach(function (pk) {
+      const p = picks.get(pk);
+      if (clashes(p.resource_id, key) && p.start < end && p.end > start) {
+        picks.delete(pk);
+        const n = resName(p.resource_id);
+        if (names.indexOf(n) === -1) names.push(n);
+      }
+    });
+    return names;
+  }
+  function replacedHint(names, key, when) {
+    return names.length ? 'Replaced ' + names.join(' and ') + ' ' + when + ' with ' + resName(key) + '.' : '';
+  }
+
   function togglePick(b, key) {
     const pk = pkOf(key, b.start);
     const max = limit();
+    let note = '';
     barHint = '';
     if (picks.has(pk)) picks.delete(pk);
     else if (max === 1) { picks.clear(); picks.set(pk, { resource_id: key, start: b.start, end: b.end }); } // one slot: move the selection
-    else if (max !== null && picks.size >= max) barHint = 'You can select up to ' + max + ' time slots at a time.';
-    else picks.set(pk, { resource_id: key, start: b.start, end: b.end });
-    setHint('');
+    else {
+      const removed = dropClashes(key, b.start, b.end); // e.g. Both Courts replaces Court 1 / Court 2 at this time
+      if (max !== null && picks.size >= max) barHint = 'You can select up to ' + max + ' time slots at a time.';
+      else picks.set(pk, { resource_id: key, start: b.start, end: b.end });
+      note = replacedHint(removed, key, 'at ' + timeRange(b.start, b.end, false));
+    }
+    setHint(note);
     renderGrid(pk); renderSelbar();
   }
 
@@ -344,8 +379,13 @@ export async function renderBook(root, ctx) {
           if (p.resource_id === key && p.start.slice(0, 10) === day.date) picks.delete(pk);
         });
       }
-      blocks.forEach(function (b) { picks.set(pkOf(key, b.start), { resource_id: key, start: b.start, end: b.end }); });
-      setHint(cap ? r.name + ' bookings can be up to ' + cap + ' hours.' : '');
+      const removed = [];
+      blocks.forEach(function (b) {
+        dropClashes(key, b.start, b.end).forEach(function (n) { if (removed.indexOf(n) === -1) removed.push(n); });
+        picks.set(pkOf(key, b.start), { resource_id: key, start: b.start, end: b.end });
+      });
+      const note = replacedHint(removed, key, 'on this day');
+      setHint(cap ? r.name + ' bookings can be up to ' + cap + ' hours.' + (note ? ' ' + note : '') : note);
     }
     renderGrid('whole|' + key); renderSelbar();
   }
