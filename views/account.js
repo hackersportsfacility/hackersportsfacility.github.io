@@ -93,10 +93,10 @@ function cardBlock(ctx, noteSlot) {
       const add = h('button', { class: 'btn primary', type: 'button', text: 'Add payment card' });
       add.addEventListener('click', function () { clear(noteSlot); startCardFlow(add, errSlot, null, onSaved); });
       actions.append(add);
-      wrap.append(h('p', { text: 'No card saved.' }));
+      wrap.append(h('p', { text: "You haven't added a payment card yet." }));
     }
     add(wrap,
-      h('p', { class: 'hint', text: "Your card is saved securely by Stripe. We never see your card number. You're charged about 24 hours before each booking." }),
+      h('p', { class: 'hint', text: (card ? 'Your card has been stored by Stripe' : 'Cards are stored by Stripe') + ', our secure payment processor. Hacker Sports Facility never sees or keeps your card number. Your card is charged about 24 hours before each booking.' }),
       me.payments_enabled === false ? h('p', { class: 'hint', text: 'Automatic charging is paused right now.' }) : null,
       errSlot, actions);
   }

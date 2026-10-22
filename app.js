@@ -34,9 +34,20 @@ function go(hash) {
   else location.hash = hash;
 }
 
+// Every request for the member's details takes a number; only the newest one may update the screen.
+// Without this, a slow background startup sent before (say) a card was saved could land afterwards
+// and put the older "no card" details back.
+let meRequest = 0;
+
 async function loadMe() {
-  state.me = await call('me');
-  state.member = state.me.member;
+  const mine = ++meRequest;
+  const me = await call('me');
+  if (mine === meRequest) {
+    state.me = me;
+    state.member = me.member;
+    // Keep the saved copy current so the next app open shows the same thing.
+    if (state.resources && state.avail) saveCache({ me: me, resources: state.resources, availability: state.avail });
+  }
   return state.me;
 }
 
@@ -66,7 +77,17 @@ function applyStartup(d, fromCache) {
 }
 
 async function loadStartup() {
+  const mine = ++meRequest;
   const d = await fetchStartup();
+  if (mine !== meRequest) {
+    // A newer request already updated the member's details; keep them and only take the rest.
+    state.resources = d.resources;
+    state.avail = d.availability;
+    state.availAt = Date.now();
+    state.refreshFailed = false;
+    saveCache({ me: state.me, resources: d.resources, availability: d.availability });
+    return d;
+  }
   applyStartup(d, false);
   saveCache(d);
   return d;
