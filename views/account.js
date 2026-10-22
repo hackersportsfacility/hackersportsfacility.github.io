@@ -184,4 +184,7 @@ export async function renderAccount(root, ctx) {
       h('p', { class: 'hint', text: 'Open the app like any other app, straight from your home screen.' }), steps),
     errSlot,
     out);
+
+  // Now that this screen is fully drawn, let a background refresh redraw it with the latest details.
+  if (!ctx.stale()) ctx.state.onFresh = function () { ctx.go('#/account'); };
 }

@@ -117,7 +117,8 @@ async function refreshInBackground() {
   if (!state.member) return;
   updateChrome(currentRoute);
   if (state.onFresh) state.onFresh();
-  else if (currentRoute === 'account') route();
+  // The Account screen sets onFresh itself once it has finished drawing, so a background refresh
+  // can never interrupt it mid-way (e.g. while it is confirming a card just saved on Stripe).
 }
 
 function buildShell() {
