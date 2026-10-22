@@ -1,6 +1,6 @@
-import { call } from '../api.js';
-import { h, add, icon, clear, parseLocal, todayYmd, addDays, dowName, monthName, dayNum, mondayOf, fmtDay, timeRange, fmtRange, money, isEmail, fullName, termsLink } from '../util.js';
-import { banner, skeleton, field, setBusy, openSheet } from '../ui.js';
+import { call, clearCache } from '../api.js';
+import { h, add, icon, clear, parseLocal, todayYmd, addDays, dowName, monthName, dayNum, mondayOf, fmtDay, timeRange, fmtRange, money, isEmail, fullName, termsLink, hashParams, clearHashParams } from '../util.js';
+import { banner, skeleton, field, setBusy, openSheet, startCardFlow } from '../ui.js';
 import { waiverOf } from './waiver.js';
 
 const GOLF = 'GOLF';
@@ -57,6 +57,7 @@ export async function renderBook(root, ctx) {
   if (priv && (!weekFrom || weekFrom < today)) weekFrom = today;
 
   root.append(h('h1', { text: 'Book a court' }));
+  const cardNoteSlot = h('div');
   const waiverSlot = h('div');
   const usageSlot = h('p', { class: 'usage' });
   const noteSlot = h('p', { class: 'usage updating', role: 'status' });
@@ -68,7 +69,7 @@ export async function renderBook(root, ctx) {
   const hintSlot = h('p', { class: 'hint sel-hint', role: 'status', text: DEFAULT_HINT });
   const gridSlot = h('div');
   const selbar = h('div', { class: 'selbar', role: 'region', 'aria-label': 'Selected times', hidden: true });
-  root.append(waiverSlot, usageSlot, noteSlot, errSlot, controlsSlot, navSlot, pickerSlot, hintSlot, gridSlot, selbar);
+  root.append(cardNoteSlot, waiverSlot, usageSlot, noteSlot, errSlot, controlsSlot, navSlot, pickerSlot, hintSlot, gridSlot, selbar);
   gridSlot.append(skeleton(5));
 
   let resources = state.resources || [];
@@ -99,6 +100,25 @@ export async function renderBook(root, ctx) {
   renderUsage();
   renderNote();
   renderWaiverNote();
+
+  // Coming back from Stripe card setup: #/book?card=done&cs=... or ?card=cancel
+  const rp = hashParams();
+  if (rp.card) {
+    clearHashParams();
+    if (rp.card === 'done' && rp.cs) {
+      try {
+        await call('confirmCardSetup', { cs: rp.cs });
+        clearCache();
+        me = await ctx.loadMe();
+        cardNoteSlot.append(banner('Card saved. You can request bookings now.', 'info'));
+      } catch (e) {
+        cardNoteSlot.append(banner(e));
+      }
+      if (ctx.stale()) return;
+    } else if (rp.card === 'cancel') {
+      cardNoteSlot.append(banner('No card was saved.', 'info'));
+    }
+  }
 
   // ---- data ----
   function usable(a) {
@@ -485,6 +505,7 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
     return used + weekSlots[wk] > me.week.limit;
   });
   const termsNeeded = !priv && !!me.terms && !me.terms.accepted;
+  let cardNeeded = !priv && total > 0 && !me.card;
   const capErrors = [];
   merged.forEach(function (s, i) {
     const cap = Number(resList[i].max_hours) || 0;
@@ -511,6 +532,7 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
   const newSlot = h('div');
   const priceSlot = h('div', { class: 'price', 'aria-live': 'polite' });
   const errSlot = h('div');
+  const actionSlot = h('div');
   const submit = h('button', { class: 'btn primary block', type: 'button', text: isOwner ? 'Book' : (multi ? 'Request bookings' : 'Request booking') });
 
   const radios = [['Split', 'Everyone pays their share'], ['BookerPays', "I'll cover everyone"]].map(function (o, i) {
@@ -617,10 +639,33 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
     h('h3', { class: 'small-h', text: 'Players' }), playersSlot, knownSlot, newSlot,
     priv ? null : h('fieldset', { class: 'paymode' }, h('legend', { text: 'Payment' }), h('div', { class: 'segs' }, radios)),
     priceSlot,
-    priv ? null : h('p', { class: 'hint', text: "Payment isn't collected yet — you'll be notified when payments start." }),
+    priv ? null : h('p', { class: 'hint', text: "Your card is charged about 24 hours before the booking. Players who don't pay are charged to you at the start time." }),
     errSlot,
-    termsNeeded ? termsGate() : submit);
+    actionSlot);
   refresh();
+  renderAction();
+
+  function renderAction() {
+    clear(actionSlot);
+    if (termsNeeded) actionSlot.append(termsGate());
+    else if (cardNeeded) actionSlot.append(cardGate());
+    else actionSlot.append(submit);
+  }
+
+  function cardGate() {
+    const slot = h('div');
+    const add = h('button', { class: 'btn primary block', type: 'button', text: 'Add payment card' });
+    add.addEventListener('click', function () {
+      clear(errSlot);
+      startCardFlow(add, slot, 'book', async function () {
+        const fresh = await ctx.loadMe();
+        cardNeeded = !fresh.card;
+        renderAction();
+      });
+    });
+    return h('div', { class: 'card-gate' },
+      banner('Add a payment card to request bookings.'), slot, add);
+  }
 
   function termsGate() {
     return h('div', { class: 'terms-gate' },
@@ -647,6 +692,7 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
       showDone(out.bookings || []);
     } catch (err) {
       errSlot.append(banner(err));
+      if (err.code === 'CARD_REQUIRED') { cardNeeded = true; renderAction(); }
       if (err.code === 'TERMS_REQUIRED') errSlot.append(h('a', { class: 'btn primary block', href: termsLink('book'), text: 'Read and accept the terms' }));
       setBusy(submit, false);
       // The sheet stays open; the grid behind it refreshes so the selection can be adjusted.

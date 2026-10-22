@@ -278,3 +278,8 @@ fieldset.guardian legend { font-weight: 600; padding: 0 6px; }
 .agree-row { align-items: flex-start; margin: 4px 0 12px; }
 .agree-row input { margin-top: 2px; }
 .wv-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* Phase 2B: payments */
+.share-cell { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.card-gate { display: grid; gap: 10px; }
+.card-line { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }

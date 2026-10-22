@@ -1,6 +1,6 @@
 // Shared UI pieces: banners, skeletons, pills, modal sheet.
-import { h, icon, clear } from './util.js';
-import { friendlyMessage } from './api.js';
+import { h, icon, clear, termsLink } from './util.js';
+import { friendlyMessage, call, clearCache } from './api.js';
 
 export function banner(errOrMsg, kind) {
   const msg = typeof errOrMsg === 'string' ? errOrMsg : friendlyMessage(errOrMsg);
@@ -31,6 +31,45 @@ export function pill(status) {
 const ROLE_PILL = { Owner: 'court', Family: 'ok', Member: 'muted', Guest: 'warn' };
 export function rolePill(role) {
   return h('span', { class: 'pill ' + (ROLE_PILL[role] || 'muted'), text: role || 'Member' });
+}
+
+// Payment share pills (Phase 2B).
+const SHARE_PILL = {
+  Paid: ['ok', 'Paid'], Pending: ['warn', 'Pending'], Unpaid: ['danger', 'Unpaid'],
+  CoveredByBooker: ['muted', 'Covered by booker'], Waived: ['muted', 'Waived'],
+};
+export function sharePill(status) {
+  const d = SHARE_PILL[status];
+  return d ? h('span', { class: 'pill ' + d[0], text: d[1] }) : null;
+}
+
+// Starts the Stripe card setup. Demo mode answers { mock_saved: true } and we call onSaved();
+// otherwise the browser goes to the Stripe page. returnTo is 'book' or omitted (Account).
+export async function startCardFlow(btn, errSlot, returnTo, onSaved) {
+  clear(errSlot);
+  setBusy(btn, true, 'Opening…');
+  let out;
+  try {
+    out = await call('startCardSetup', returnTo ? { return_to: returnTo } : {});
+  } catch (e) {
+    errSlot.append(banner(e));
+    if (e && e.code === 'TERMS_REQUIRED') errSlot.append(h('a', { class: 'btn primary block', href: termsLink(returnTo || 'account'), text: 'Read and accept the terms' }));
+    setBusy(btn, false);
+    return;
+  }
+  if (out && out.mock_saved) {
+    clearCache();
+    try { await onSaved(); } catch (e) { errSlot.append(banner(e)); }
+    setBusy(btn, false);
+    return;
+  }
+  if (out && out.url) {
+    location.href = out.url;
+    setTimeout(function () { setBusy(btn, false); }, 5000); // in case the page stays (back button)
+    return;
+  }
+  errSlot.append(banner('Could not open the card page. Please try again.'));
+  setBusy(btn, false);
 }
 
 export function setBusy(btn, busy, busyLabel) {

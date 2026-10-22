@@ -147,7 +147,8 @@ function updateChrome(name) {
 
 async function route() {
   const id = ++routeId;
-  let name = (location.hash.replace(/^#\/?/, '').split(/[/?]/)[0]) || '';
+  const rawName = (location.hash.replace(/^#\/?/, '').split(/[/?]/)[0]) || '';
+  let name = rawName;
   let def = ROUTES[name];
   if (!def) name = state.member ? 'book' : 'signin';
   def = ROUTES[name];
@@ -155,7 +156,8 @@ async function route() {
   else if (state.member && def.public) { name = 'book'; def = ROUTES.book; }
   else if (def.owner && !(state.member && state.member.is_owner)) { name = 'book'; def = ROUTES.book; }
   const wanted = '#/' + name;
-  if (location.hash !== wanted) history.replaceState(null, '', location.pathname + location.search + wanted);
+  // A matching route keeps its ?query (Stripe return params); the view reads and then clears it.
+  if (rawName !== name) history.replaceState(null, '', location.pathname + location.search + wanted);
 
   document.title = def.title + ' · Hacker Sports Facility';
   currentRoute = name;

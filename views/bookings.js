@@ -1,13 +1,14 @@
 import { call } from '../api.js';
-import { h, add, clear, fmtRange, money, nowLocal, hoursUntil, fullName } from '../util.js';
-import { banner, skeleton, pill, setBusy } from '../ui.js';
+import { h, add, clear, fmtRange, money, nowLocal, hoursUntil, fullName, hashParams, clearHashParams } from '../util.js';
+import { banner, skeleton, pill, sharePill, setBusy } from '../ui.js';
 
 export async function renderBookings(root, ctx) {
   const state = ctx.state;
   let showPast = false;
   const listSlot = h('div');
+  const noteSlot = h('div');
   const seg = h('div', { class: 'segs toggle', role: 'group', 'aria-label': 'Which bookings' });
-  root.append(h('h1', { text: 'My bookings' }), seg, listSlot);
+  root.append(h('h1', { text: 'My bookings' }), noteSlot, seg, listSlot);
 
   function renderToggle() {
     clear(seg);
@@ -17,6 +18,21 @@ export async function renderBookings(root, ctx) {
         onclick: function () { if (showPast !== o[1]) { showPast = o[1]; renderToggle(); load(); } },
       }));
     });
+  }
+
+  // Coming back from Stripe Checkout: #/bookings?paid=1&cs=...
+  const rp = hashParams();
+  if (rp.paid) {
+    clearHashParams();
+    if (rp.cs) {
+      try {
+        await call('confirmPayment', { cs: rp.cs });
+        noteSlot.append(banner('Payment received', 'info'));
+      } catch (e) {
+        noteSlot.append(banner(e));
+      }
+      if (ctx.stale()) return;
+    }
   }
 
   async function load() {
@@ -58,10 +74,31 @@ export async function renderBookings(root, ctx) {
         bk.late_cancel ? h('p', { class: 'hint warn-text', text: 'Cancelled within the free cancellation window.' }) : null,
         bk.is_booker ? null : h('p', { class: 'hint', text: 'Booked by ' + fullName(bk.booker) }),
         h('ul', { class: 'players detail' }, bk.players.map(function (p) { return playerRow(bk, p); })),
-        h('p', { class: 'hint' }, (bk.pay_mode === 'BookerPays' ? 'Booker covers everyone' : 'Everyone pays their share') + ' · Total ' + money(bk.total_amount) + " · Payment isn't collected yet."),
+        h('p', { class: 'hint' }, (bk.pay_mode === 'BookerPays' ? 'Booker covers everyone' : 'Everyone pays their share') + ' · Total ' + money(bk.total_amount)),
         errSlot, actions);
+      const own = bk.players.filter(function (p) { return p.can_pay && p.share_id; })[0];
+      if (own) {
+        const pay = h('button', { class: 'btn primary', type: 'button', text: 'Pay ' + money(own.share_amount) + ' now' });
+        pay.addEventListener('click', function () { payNow(pay, own); });
+        actions.append(pay);
+      }
       if (bk.can_cancel) {
         actions.append(h('button', { class: 'btn danger-ghost', type: 'button', text: 'Cancel booking', onclick: function () { confirmCancel(bk); } }));
+      }
+    }
+
+    async function payNow(btn, p) {
+      clear(errSlot);
+      setBusy(btn, true, 'Paying…');
+      try {
+        const out = await call('payShare', { share_id: p.share_id });
+        if (out && out.url) { location.href = out.url; return; }
+        // { paid: true } (or the demo's mock_paid): refresh the list
+        noteSlot.replaceChildren(banner('Payment received', 'info'));
+        await load();
+      } catch (e) {
+        errSlot.append(banner(e));
+        setBusy(btn, false);
       }
     }
 
@@ -100,12 +137,13 @@ export async function renderBookings(root, ctx) {
 }
 
 function playerRow(bk, p) {
-  let share;
-  if (p.share_status === 'Waived') share = 'Waived';
-  else if (bk.pay_mode === 'BookerPays' && !(p.share_amount > 0)) share = 'Covered by booker';
-  else share = money(p.share_amount) + (p.share_status ? ' · ' + p.share_status : '');
+  let status = p.share_status;
+  if (!status && bk.pay_mode === 'BookerPays' && !(p.share_amount > 0)) status = 'CoveredByBooker';
+  const showAmount = status !== 'Waived' && status !== 'CoveredByBooker' && p.share_amount > 0;
   return h('li', null,
     h('span', { class: 'pname' }, fullName(p),
       p.status && p.status !== 'Active' ? h('span', { class: 'tag warn', text: p.status === 'Pending' ? 'Awaiting approval' : p.status }) : null),
-    h('span', { class: 'mono share', text: share }));
+    h('span', { class: 'share-cell' },
+      showAmount ? h('span', { class: 'mono share', text: money(p.share_amount) }) : null,
+      sharePill(status)));
 }

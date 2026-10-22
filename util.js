@@ -138,3 +138,29 @@ export function fmtDate(s) {
 
 export function isEmail(s) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || '').trim()); }
 export function fullName(p) { return ((p && p.first_name) || '') + ' ' + ((p && p.last_name) || ''); }
+
+// ---- hash params (Phase 2B: Stripe return links like #/account?card=done&cs=...) ----
+// Reads the query part of location.hash as a plain object.
+export function hashParams() {
+  const i = location.hash.indexOf('?');
+  const out = {};
+  if (i < 0) return out;
+  try {
+    new URLSearchParams(location.hash.slice(i + 1)).forEach(function (v, k) { out[k] = v; });
+  } catch (e) { /* malformed query: treat as none */ }
+  return out;
+}
+// Removes the query part of location.hash without adding a history entry or firing hashchange.
+export function clearHashParams() {
+  const i = location.hash.indexOf('?');
+  if (i < 0) return;
+  history.replaceState(null, '', location.pathname + location.search + location.hash.slice(0, i));
+}
+
+// "Visa •••• 4242, expires 12/28"
+export function cardLabel(c) {
+  if (!c) return '';
+  const b = String(c.brand || 'card');
+  const brand = b.charAt(0).toUpperCase() + b.slice(1);
+  return brand + ' •••• ' + (c.last4 || '') + (c.exp ? ', expires ' + c.exp : '');
+}

@@ -1,6 +1,6 @@
-import { call, clearToken } from '../api.js';
-import { h, fullName, termsLink, fmtDate } from '../util.js';
-import { banner, setBusy } from '../ui.js';
+import { call, clearToken, clearCache } from '../api.js';
+import { h, add, clear, fullName, termsLink, fmtDate, hashParams, clearHashParams, cardLabel } from '../util.js';
+import { banner, setBusy, startCardFlow } from '../ui.js';
 import { waiverOf, resendGuardian } from './waiver.js';
 
 function platform() {
@@ -62,7 +62,94 @@ function waiverBlock(me) {
     h('a', { class: 'btn primary', href: '#/waiver', text: 'Sign the waiver' }));
 }
 
+// Payment card card: add / replace / remove. Re-reads ctx.state.me.card each time it paints.
+function cardBlock(ctx, noteSlot) {
+  const wrap = h('div');
+  const errSlot = h('div');
+  const actions = h('div', { class: 'btn-row' });
+
+  async function refreshMe() {
+    clearCache();
+    await ctx.loadMe();
+    paint();
+  }
+  async function onSaved() {
+    await refreshMe();
+    clear(noteSlot);
+    noteSlot.append(banner('Card saved', 'info'));
+  }
+
+  function paint() {
+    const me = ctx.state.me;
+    const card = me.card;
+    clear(wrap);
+    clear(actions);
+    if (card) {
+      const replace = h('button', { class: 'btn', type: 'button', text: 'Replace card' });
+      replace.addEventListener('click', function () { clear(noteSlot); startCardFlow(replace, errSlot, null, onSaved); });
+      actions.append(replace, h('button', { class: 'btn danger-ghost', type: 'button', text: 'Remove card', onclick: confirmRemove }));
+      wrap.append(h('p', { class: 'card-line' }, h('span', { class: 'pill ok', text: 'Saved' }), ' ', cardLabel(card)));
+    } else {
+      const add = h('button', { class: 'btn primary', type: 'button', text: 'Add payment card' });
+      add.addEventListener('click', function () { clear(noteSlot); startCardFlow(add, errSlot, null, onSaved); });
+      actions.append(add);
+      wrap.append(h('p', { text: 'No card saved.' }));
+    }
+    add(wrap,
+      h('p', { class: 'hint', text: "Your card is saved securely by Stripe. We never see your card number. You're charged about 24 hours before each booking." }),
+      me.payments_enabled === false ? h('p', { class: 'hint', text: 'Automatic charging is paused right now.' }) : null,
+      errSlot, actions);
+  }
+
+  function confirmRemove() {
+    clear(actions);
+    clear(errSlot);
+    clear(noteSlot);
+    const yes = h('button', { class: 'btn danger', type: 'button', text: 'Yes, remove card' });
+    const panel = h('div', { class: 'confirm', role: 'alertdialog', 'aria-label': 'Confirm remove card' },
+      h('p', { text: 'Remove your saved card?' }),
+      h('p', { class: 'hint', text: 'You will need to add a card again before you can request bookings.' }),
+      h('div', { class: 'btn-row' }, yes, h('button', { class: 'btn', type: 'button', text: 'Keep card', onclick: paint })));
+    yes.addEventListener('click', async function () {
+      setBusy(yes, true, 'Removing…');
+      try {
+        await call('removeCard', {});
+        await refreshMe();
+        noteSlot.append(banner('Card removed', 'info'));
+      } catch (e) {
+        clear(errSlot);
+        errSlot.append(banner(e));
+        setBusy(yes, false);
+      }
+    });
+    actions.append(panel);
+    yes.focus();
+  }
+
+  paint();
+  return wrap;
+}
+
 export async function renderAccount(root, ctx) {
+  // Coming back from Stripe: #/account?card=done&cs=... or ?card=cancel
+  const noteSlot = h('div');
+  const params = hashParams();
+  if (params.card) {
+    clearHashParams();
+    if (params.card === 'done' && params.cs) {
+      try {
+        await call('confirmCardSetup', { cs: params.cs });
+        clearCache();
+        await ctx.loadMe();
+        noteSlot.append(banner('Card saved', 'info'));
+      } catch (e) {
+        noteSlot.append(banner(e));
+      }
+      if (ctx.stale()) return;
+    } else if (params.card === 'cancel') {
+      noteSlot.append(banner('No card was saved.', 'info'));
+    }
+  }
   const me = ctx.state.me;
   const m = me.member;
   const errSlot = h('div');
@@ -92,6 +179,7 @@ export async function renderAccount(root, ctx) {
       m.role === 'Family' ? h('p', { class: 'hint', text: 'Family member' }) : null),
     h('section', { class: 'card' }, h('h2', { text: 'Waiver' }), waiver),
     h('section', { class: 'card' }, h('h2', { text: 'Booking and Payment Terms' }), termsBlock(me)),
+    h('section', { class: 'card' }, h('h2', { text: 'Payment card' }), noteSlot, cardBlock(ctx, noteSlot)),
     h('section', { class: 'card' }, h('h2', { text: 'Add to Home Screen' }),
       h('p', { class: 'hint', text: 'Open the app like any other app, straight from your home screen.' }), steps),
     errSlot,

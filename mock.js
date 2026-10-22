@@ -29,12 +29,13 @@ function member(id, first, last, email, role, status, extra) {
     booking_terms_version: id === 'M0002' ? 0 : 1, booking_terms_accepted_at: id === 'M0002' ? '' : addDays(todayYmd(), -29) + 'T09:05',
     created_at: addDays(todayYmd(), -30) + 'T09:00',
     approved_at: addDays(todayYmd(), -29) + 'T09:00', notes: '',
+    card: null, // Phase 2B: { brand, last4, exp } when a card is saved
   }, extra || {});
 }
 
 const members = [
   member('M0001', 'Ryan', 'Hacker', 'ryan@example.com', 'Owner', 'Active'),
-  member('M0002', 'Alex', 'Smith', 'alex@example.com', 'Member', 'Active'),
+  member('M0002', 'Alex', 'Smith', 'alex@example.com', 'Member', 'Active', { card: { brand: 'visa', last4: '4242', exp: '12/30' } }),
   member('M0003', 'Jamie', 'Lee', 'jamie@example.com', 'Member', 'Active'),
   member('M0004', 'Priya', 'Patel', 'priya@example.com', 'Member', 'Active', { max_slots_override: 3 }),
   member('M0005', 'Sam', 'Rivera', 'sam@example.com', 'Guest', 'Pending', { invited_by_member_id: 'M0002', approved_at: '' }),
@@ -78,8 +79,9 @@ function addBooking(o) {
     booker: o.booker, notes: o.notes || '', cancelled_at: '',
     players: ids.map(function (id, i) {
       seqS++;
-      if (priv) return { member_id: id, share_amount: 0, share_status: 'Waived' };
-      return { member_id: id, share_amount: shares[i] == null ? 0 : shares[i], share_status: shares[i] == null ? '' : 'Pending' };
+      const sid = 'S' + ('00000' + seqS).slice(-5);
+      if (priv) return { share_id: sid, member_id: id, share_amount: 0, share_status: 'Waived' };
+      return { share_id: sid, member_id: id, share_amount: shares[i] == null ? 0 : shares[i], share_status: shares[i] == null ? '' : 'Pending' };
     }),
     created_at: o.created_at || now0,
   };
@@ -104,6 +106,18 @@ addBooking({ resource_id: 'GOLF', start: dayAt(1, 10), status: 'Approved', booke
 addBooking({ resource_id: 'GOLF', start: dayAt(1, 18), status: 'Approved', booker: 'M0007', guests: [], pay_mode: 'BookerPays' });
 addBooking({ resource_id: 'GOLF', start: dayAt(2, 14), end: dayAt(2, 18), status: 'Approved', booker: 'M0001', guests: ['M0007'], pay_mode: 'BookerPays' });
 addBooking({ resource_id: 'GOLF', start: dayAt(3, 8), status: 'Pending', booker: 'M0007', guests: [], pay_mode: 'BookerPays' });
+// Demo payment states (Phase 2B), so Pay now and every pill can be seen.
+function setShare(bi, memberId, status) {
+  const p = bookings[bi].players.filter(function (x) { return x.member_id === memberId; })[0];
+  if (p && p.share_status !== 'Waived') p.share_status = status;
+}
+bookings.forEach(function (b, i) {
+  if (b.status === 'Completed') b.players.forEach(function (p) { if (p.share_status !== 'Waived') p.share_status = 'Paid'; });
+});
+setShare(0, 'M0002', 'Unpaid');           // Alex's share on his own Approved booking: Pay now
+setShare(0, 'M0003', 'Unpaid');
+setShare(5, 'M0003', 'CoveredByBooker');  // Priya's booking: Jamie was covered
+setShare(6, 'M0003', 'Paid');             // Jamie's booking: Priya's share still Pending
 
 // ---- helpers ----
 function err(code, message) { return { ok: false, error: { code: code, message: message } }; }
@@ -143,7 +157,12 @@ function detail(b, v, withContact) {
     booker: { first_name: bk.first_name, last_name: bk.last_name },
     players: b.players.map(function (p) {
       const m = memById(p.member_id);
-      return { member_id: m.member_id, first_name: m.first_name, last_name: m.last_name, status: m.status, share_amount: p.share_amount, share_status: p.share_status };
+      const o = { member_id: m.member_id, first_name: m.first_name, last_name: m.last_name, status: m.status, share_amount: p.share_amount, share_status: p.share_status };
+      if (v && p.member_id === v.member_id) { // only the viewer's own share exposes its id
+        o.share_id = p.share_id;
+        o.can_pay = (p.share_status === 'Pending' || p.share_status === 'Unpaid') && p.share_amount > 0 && active(b);
+      }
+      return o;
     }),
     late_cancel: /LATE_CANCEL/.test(b.notes),
     can_cancel: active(b) && b.start > nowLocal() && !!v && (b.booker === v.member_id || !!owner),
@@ -208,6 +227,11 @@ function run(req) {
       case 'cancelBooking': return cancelBooking(req, v);
       case 'knownPlayers': return knownPlayers(v);
       case 'acceptTerms': return acceptTerms(req, v);
+      case 'startCardSetup': return startCardSetup(req, v);
+      case 'confirmCardSetup': return confirmCardSetup(req, v);
+      case 'removeCard': return removeCard(req, v);
+      case 'payShare': return payShare(req, v);
+      case 'confirmPayment': return confirmPayment(req, v);
       case 'waiverText': return ok(WAIVER_TEXT);
       case 'signWaiver': return signWaiver(req, v);
       case 'resendGuardianEmail': return resendGuardianEmail(v);
@@ -403,6 +427,8 @@ function me(v) {
     waiver: waiverStatus(v),
     waiver_form_url: 'https://example.com/waiver-demo',
     terms: termsStatus(v),
+    card: v.card ? { brand: v.card.brand, last4: v.card.last4, exp: v.card.exp } : null,
+    payments_enabled: true,
     settings: Object.assign({}, SETTINGS),
   });
 }
@@ -443,6 +469,7 @@ function availability(r, v) {
 
 function createBooking(r, v) {
   if (!termsStatus(v).accepted) return err('TERMS_REQUIRED', 'Please read and accept the Booking and Payment Terms before booking. You can do this from the Account screen.');
+  if (needsCard(v, [r])) return cardRequired();
   const res = resById(r.resource_id);
   if (!res || !r.start) return err('BAD_REQUEST', 'Missing or invalid booking details.');
   if (!visibleTo(res, v)) return err('FORBIDDEN', "That resource isn't available to you.");
@@ -464,6 +491,52 @@ function createBooking(r, v) {
   const ids = [v.member_id].concat(createGuests(gr.list, v));
   const b = addBooking({ resource_id: res.resource_id, start: r.start, status: v.role === 'Family' ? 'Pending' : (priv ? 'Approved' : 'Pending'), booker: v.member_id, guests: ids.slice(1), pay_mode: priv ? 'BookerPays' : payMode });
   return ok({ booking: detail(b, v) });
+}
+
+// ---- payments (Phase 2B): no real Stripe ----
+const DEMO_CARD = { brand: 'visa', last4: '4242', exp: '12/30' };
+function needsCard(v, sessions) {
+  if (isPriv(v) || v.card) return false;
+  return sessions.some(function (s) { const res = s && resById(s.resource_id); return !!res && res.rate_per_hour > 0; });
+}
+function cardRequired() {
+  return err('CARD_REQUIRED', 'Add a payment card before requesting bookings. Your card is charged about 24 hours before each booking.');
+}
+function startCardSetup(r, v) {
+  if (!termsStatus(v).accepted) return err('TERMS_REQUIRED', 'Please read and accept the Booking and Payment Terms before booking. You can do this from the Account screen.');
+  v.card = Object.assign({}, DEMO_CARD);
+  return ok({ url: null, mock_saved: true });
+}
+function confirmCardSetup(r, v) {
+  if (!r.cs) return err('BAD_REQUEST', 'Missing card session.');
+  if (!v.card) v.card = Object.assign({}, DEMO_CARD);
+  return ok({ card: Object.assign({}, v.card) });
+}
+function removeCard(r, v) {
+  const nowS = nowLocal();
+  const upcoming = bookings.some(function (b) { return b.booker === v.member_id && active(b) && b.start > nowS && b.total_amount > 0; });
+  if (upcoming) return err('BAD_REQUEST', 'You have upcoming bookings. Replace your card instead of removing it.');
+  v.card = null;
+  return ok({ card: null });
+}
+function shareOf(id, v) {
+  for (let i = 0; i < bookings.length; i++) {
+    const p = bookings[i].players.filter(function (x) { return x.share_id === id && x.member_id === v.member_id; })[0];
+    if (p) return { b: bookings[i], p: p };
+  }
+  return null;
+}
+function payShare(r, v) {
+  const f = shareOf(r.share_id, v);
+  if (!f) return err('NOT_FOUND', 'We could not find that payment.');
+  if (!(f.p.share_status === 'Pending' || f.p.share_status === 'Unpaid') || !(f.p.share_amount > 0) || !active(f.b)) return err('BAD_REQUEST', "That payment can't be made right now.");
+  f.p.share_status = 'Paid';
+  if (v.card) return ok({ paid: true, share: { share_id: f.p.share_id, share_status: 'Paid' } });
+  return ok({ url: null, mock_paid: true, paid: true });
+}
+function confirmPayment(r, v) {
+  if (!r.cs) return err('BAD_REQUEST', 'Missing payment session.');
+  return ok({ share: null });
 }
 
 // Validates guests without creating anyone. Returns { list } or { error }.
@@ -515,6 +588,7 @@ function hrsOf(s) {
 // merge, all-or-nothing conflict check, then price and split per merged booking.
 function createBookings(r, v) {
   if (!termsStatus(v).accepted) return err('TERMS_REQUIRED', 'Please read and accept the Booking and Payment Terms before booking. You can do this from the Account screen.');
+  if (needsCard(v, Array.isArray(r.sessions) ? r.sessions : [])) return cardRequired();
   const input = Array.isArray(r.sessions) ? r.sessions : [];
   if (!input.length) return err('BAD_REQUEST', 'Pick at least one time.');
   const payMode = r.pay_mode || 'Split';
