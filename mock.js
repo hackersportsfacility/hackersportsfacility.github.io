@@ -1,11 +1,12 @@
 // In-memory fake of the booking engine (docs/phase1-api-contract.md). Demo mode only.
-// Sign in with any email (alex@example.com = regular member, jordan@example.com = family, anything else = owner). Code: 123456.
+// Sign in with any email (alex@example.com = member (slot limit 1), priya@example.com = member (slot limit 3), jordan@example.com = family, anything else = owner). Code: 123456.
 import { pad, todayYmd, addDays, nowLocal, mondayOf, parseLocal, dowName, monthName, dayNum, timeRange } from './util.js';
 
 const FACILITY = 'Hacker Sports Facility';
 const SETTINGS = { open_hour: 6, close_hour: 22, block_hours: 2, max_players_per_court: 4, free_cancel_hours: 24 };
 const WEEKLY_LIMIT = 3;
 const BOOK_AHEAD = 7;
+const MAX_SLOTS_PER_REQUEST = 1;
 
 const RESOURCES = [
   { resource_id: 'COURT1', name: 'Court 1', block_hours: 2, rate_per_hour: 20, courts: 1, visible_to: '', max_hours: null },
@@ -22,7 +23,7 @@ function member(id, first, last, email, role, status, extra) {
     member_id: id, status: status, role: role, first_name: first, last_name: last, email: email,
     phone: '555-010' + id.slice(-1), emergency_contact_name: 'Pat ' + last, emergency_contact_phone: '555-0199',
     is_minor: false, date_of_birth: '', guardian_name: '', guardian_email: '', invited_by_member_id: '',
-    weekly_limit_override: '', book_ahead_override: '', auto_approve: false, credit_balance: 0, strike_count: 0,
+    weekly_limit_override: '', book_ahead_override: '', max_slots_override: '', auto_approve: false, credit_balance: 0, strike_count: 0,
     waiver_version_signed: id === 'M0003' ? 0 : 1,
     // Alex (M0002) starts without accepting the Booking Terms, to demo the scroll-and-accept flow.
     booking_terms_version: id === 'M0002' ? 0 : 1, booking_terms_accepted_at: id === 'M0002' ? '' : addDays(todayYmd(), -29) + 'T09:05',
@@ -35,7 +36,7 @@ const members = [
   member('M0001', 'Ryan', 'Hacker', 'ryan@example.com', 'Owner', 'Active'),
   member('M0002', 'Alex', 'Smith', 'alex@example.com', 'Member', 'Active'),
   member('M0003', 'Jamie', 'Lee', 'jamie@example.com', 'Member', 'Active'),
-  member('M0004', 'Priya', 'Patel', 'priya@example.com', 'Member', 'Active'),
+  member('M0004', 'Priya', 'Patel', 'priya@example.com', 'Member', 'Active', { max_slots_override: 3 }),
   member('M0005', 'Sam', 'Rivera', 'sam@example.com', 'Guest', 'Pending', { invited_by_member_id: 'M0002', approved_at: '' }),
   member('M0006', 'Chris', 'Wong', 'chris@example.com', 'Member', 'Suspended'),
   member('M0007', 'Jordan', 'Hacker', 'jordan@example.com', 'Family', 'Active'),
@@ -67,7 +68,7 @@ function isPriv(m) { return !!m && (m.role === 'Owner' || m.role === 'Family'); 
 function addBooking(o) {
   const res = resById(o.resource_id);
   const priv = isPriv(memById(o.booker));
-  const total = priv ? 0 : res.rate_per_hour * res.block_hours;
+  const total = priv ? 0 : res.rate_per_hour * hrsOf({ start: o.start, end: o.end || endOf(o.start) });
   const ids = [o.booker].concat(o.guests || []);
   const shares = o.pay_mode === 'BookerPays' ? [total] : splitShares(total, ids.length);
   seqB++;
@@ -156,7 +157,20 @@ function weekCount(memberId, ymd) {
   return bookings.filter(function (b) {
     const d = b.start.slice(0, 10);
     return b.booker === memberId && (b.status === 'Pending' || b.status === 'Approved' || b.status === 'Completed') && d >= ws && d <= we;
-  }).length;
+  }).reduce(function (sum, b) { return sum + slotsOf(b); }, 0);
+}
+
+// Slots in a stretch of time on a resource: one block of the resource's block_hours is one slot (minimum 1).
+function slotsOf(s) {
+  const res = resById(s.resource_id);
+  return Math.max(1, Math.round(hrsOf(s) / ((res && res.block_hours) || SETTINGS.block_hours)));
+}
+
+// Most time slots one booking request may hold: null = unlimited (Owner and Family). Matches Bk.maxSlotsFor.
+function maxSlotsFor(m) {
+  if (isPriv(m)) return null;
+  const o = Number(m.max_slots_override);
+  return o > 0 ? o : Math.max(1, MAX_SLOTS_PER_REQUEST);
 }
 
 function isOnGrid(start) {
@@ -278,6 +292,7 @@ function me(v) {
   const t = todayYmd(), ws = mondayOf(t), priv = isPriv(v);
   return ok({
     member: summary(v),
+    max_slots: maxSlotsFor(v),
     week: { used: weekCount(v.member_id, t), limit: priv ? null : WEEKLY_LIMIT, week_start: ws, week_end: addDays(ws, 6) },
     book_ahead_days: priv ? null : BOOK_AHEAD,
     unlimited_ahead: priv,
@@ -392,12 +407,16 @@ function hrsOf(s) {
   return ((b.h * 60 + b.mi) - (a.h * 60 + a.mi)) / 60;
 }
 
-// Privileged multi-session booking: validate, merge, all-or-nothing conflict check, then create.
+// Multi-session booking for everyone: terms, slot limit, window, grid, golf cap, weekly limit by slot,
+// merge, all-or-nothing conflict check, then price and split per merged booking.
 function createBookings(r, v) {
-  if (!isPriv(v)) return err('FORBIDDEN', 'Only the owner and family can book several times at once.');
+  if (!termsStatus(v).accepted) return err('TERMS_REQUIRED', 'Please read and accept the Booking and Payment Terms before booking. You can do this from the Account screen.');
   const input = Array.isArray(r.sessions) ? r.sessions : [];
   if (!input.length) return err('BAD_REQUEST', 'Pick at least one time.');
-  const nowS = nowLocal(), list = [];
+  const payMode = r.pay_mode || 'Split';
+  if (payMode !== 'Split' && payMode !== 'BookerPays') return err('BAD_REQUEST', 'Invalid pay mode.');
+  const priv = isPriv(v), nowS = nowLocal(), list = [];
+  let slotTotal = 0;
   for (let i = 0; i < input.length; i++) {
     const s = input[i], res = s && resById(s.resource_id);
     if (!res) return err('BAD_REQUEST', 'Missing or invalid booking details.');
@@ -408,9 +427,16 @@ function createBookings(r, v) {
     const onGrid = function (p) { return p.mi === 0 && p.h >= SETTINGS.open_hour && p.h <= SETTINGS.close_hour && (p.h - SETTINGS.open_hour) % res.block_hours === 0; };
     if (s.start.slice(0, 10) !== s.end.slice(0, 10) || !onGrid(a) || !onGrid(b)) return err('BAD_REQUEST', 'That time is outside the booking blocks.');
     if (s.end <= s.start) return err('BAD_REQUEST', 'The end must be after the start.');
+    slotTotal += hrsOf(s) / res.block_hours;
+    list.push({ resource_id: res.resource_id, start: s.start, end: s.end });
+  }
+  const maxSlots = maxSlotsFor(v);
+  if (maxSlots !== null && slotTotal > maxSlots) return err('BAD_REQUEST', 'You can book up to ' + maxSlots + ' time slot' + (maxSlots === 1 ? '' : 's') + ' at a time.');
+  for (let i = 0; i < list.length; i++) {
+    const s = list[i], res = resById(s.resource_id);
     if (capFor(res, v) && hrsOf(s) > capFor(res, v)) return err('BAD_REQUEST', res.name + ' bookings can be up to ' + res.max_hours + ' hours.');
     if (s.start <= nowS) return err('OUT_OF_WINDOW', 'That time has already passed.');
-    list.push({ resource_id: res.resource_id, start: s.start, end: s.end });
+    if (!priv && s.start.slice(0, 10) > addDays(todayYmd(), BOOK_AHEAD)) return err('OUT_OF_WINDOW', 'You can book up to ' + BOOK_AHEAD + ' days ahead.');
   }
   list.sort(function (x, y) {
     if (x.resource_id !== y.resource_id) return x.resource_id < y.resource_id ? -1 : 1;
@@ -429,6 +455,12 @@ function createBookings(r, v) {
     const res = resById(merged[i].resource_id);
     if (capFor(res, v) && hrsOf(merged[i]) > capFor(res, v)) return err('BAD_REQUEST', res.name + ' bookings can be up to ' + res.max_hours + ' hours.');
   }
+  if (!priv) {
+    const perWeek = {};
+    merged.forEach(function (s) { const wk = mondayOf(s.start.slice(0, 10)); perWeek[wk] = (perWeek[wk] || 0) + slotsOf(s); });
+    const over = Object.keys(perWeek).some(function (wk) { return weekCount(v.member_id, wk) + perWeek[wk] > WEEKLY_LIMIT; });
+    if (over) return err('LIMIT_REACHED', 'That would be more than your ' + WEEKLY_LIMIT + ' bookings this week (each 2-hour time counts as one).');
+  }
   const minCourts = Math.min.apply(null, merged.map(function (s) { return resById(s.resource_id).courts || 1; }));
   const gr = checkGuests(r.guests, v, SETTINGS.max_players_per_court * minCourts);
   if (gr.error) return gr.error;
@@ -440,9 +472,9 @@ function createBookings(r, v) {
     return err('SLOT_TAKEN', 'These times are already booked: ' + taken.map(function (s) { return sessionLabel(resById(s.resource_id), s); }).join('; ') + '.');
   }
   const guestIds = createGuests(gr.list, v);
-  const status = v.role === 'Family' ? 'Pending' : 'Approved';
+  const status = v.role === 'Family' ? 'Pending' : (priv ? 'Approved' : 'Pending');
   const made = merged.map(function (s) {
-    return addBooking({ resource_id: s.resource_id, start: s.start, end: s.end, status: status, booker: v.member_id, guests: guestIds, pay_mode: 'BookerPays', notes: r.note || '' });
+    return addBooking({ resource_id: s.resource_id, start: s.start, end: s.end, status: status, booker: v.member_id, guests: guestIds, pay_mode: priv ? 'BookerPays' : payMode, notes: r.note || '' });
   });
   return ok({ bookings: made.map(function (b) { return detail(b, v); }) });
 }

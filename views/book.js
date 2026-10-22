@@ -1,5 +1,5 @@
 import { call } from '../api.js';
-import { h, add, icon, clear, parseLocal, todayYmd, addDays, dowName, monthName, dayNum, fmtDay, timeRange, fmtRange, money, isEmail, fullName, termsLink } from '../util.js';
+import { h, add, icon, clear, parseLocal, todayYmd, addDays, dowName, monthName, dayNum, mondayOf, fmtDay, timeRange, fmtRange, money, isEmail, fullName, termsLink } from '../util.js';
 import { banner, skeleton, field, setBusy, openSheet } from '../ui.js';
 
 const GOLF = 'GOLF';
@@ -17,6 +17,12 @@ let viewTab = 'courts';
 function isPriv(me) {
   const m = (me && me.member) || {};
   return !!(me && me.unlimited_ahead === true) || m.is_owner === true || m.role === 'Owner' || m.role === 'Family';
+}
+
+// How many time slots one request may hold: null = unlimited (Owner and Family), else a whole number >= 1.
+function maxSlotsOf(me) {
+  if (me && me.max_slots !== undefined) return me.max_slots === null ? null : Math.max(1, Number(me.max_slots) || 1);
+  return isPriv(me) ? null : 1;
 }
 
 // Merge sessions exactly like the engine: sort by resource then start; same resource and end === next start joins.
@@ -56,7 +62,8 @@ export async function renderBook(root, ctx) {
   const controlsSlot = h('div');
   const navSlot = h('div');
   const pickerSlot = h('div', { class: 'daypicker-wrap' });
-  const hintSlot = h('p', { class: 'hint sel-hint', role: 'status' });
+  const DEFAULT_HINT = 'Tap open times to select them.';
+  const hintSlot = h('p', { class: 'hint sel-hint', role: 'status', text: DEFAULT_HINT });
   const gridSlot = h('div');
   const selbar = h('div', { class: 'selbar', role: 'region', 'aria-label': 'Selected times', hidden: true });
   root.append(usageSlot, noteSlot, errSlot, controlsSlot, navSlot, pickerSlot, hintSlot, gridSlot, selbar);
@@ -64,9 +71,12 @@ export async function renderBook(root, ctx) {
 
   let resources = state.resources || [];
   let days = [];
-  let multi = false;
-  const picks = new Map(); // 'RES|start' -> { resource_id, start, end }
+  const picks = new Map(); // 'RES|start' -> { resource_id, start, end }; one entry is one time slot
+  let barHint = ''; // limit message shown in the selection bar
   let navId = 0;
+
+  function setHint(msg) { hintSlot.textContent = msg || DEFAULT_HINT; }
+  function limit() { return maxSlotsOf(me); }
 
   function renderUsage() {
     if (priv) usageSlot.textContent = 'No weekly limit.';
@@ -138,31 +148,20 @@ export async function renderBook(root, ctx) {
   }
   function pkOf(key, start) { return key + '|' + start; }
 
-  // ---- controls: Courts | Golf Sim, Select multiple ----
+  // ---- controls: Courts | Golf Sim ----
   function renderControls() {
     clear(controlsSlot);
-    if (!priv) return;
+    if (!priv || !hasGolf()) return;
     const row = h('div', { class: 'ctl-row' });
-    if (hasGolf()) {
-      const seg = h('div', { class: 'segs', role: 'group', 'aria-label': 'Courts or Golf Simulator' });
-      [['courts', 'Courts'], ['golf', 'Golf Sim']].forEach(function (o) {
-        const on = viewTab === o[0];
-        seg.append(h('button', {
-          type: 'button', class: 'seg-btn' + (on ? ' on' : ''), 'aria-pressed': on ? 'true' : 'false', text: o[1],
-          onclick: function () { if (viewTab !== o[0]) { viewTab = o[0]; hintSlot.textContent = ''; renderControls(); renderGrid(); } },
-        }));
-      });
-      row.append(seg);
-    }
-    row.append(h('button', {
-      type: 'button', class: 'btn' + (multi ? ' primary' : ''), 'aria-pressed': multi ? 'true' : 'false',
-      onclick: function () {
-        multi = !multi;
-        if (!multi) picks.clear();
-        hintSlot.textContent = multi ? 'Tap open times to select them, or use Whole day for a full column.' : '';
-        renderControls(); renderGrid(); renderSelbar();
-      },
-    }, multi ? icon('check', 16) : null, 'Select multiple'));
+    const seg = h('div', { class: 'segs', role: 'group', 'aria-label': 'Courts or Golf Simulator' });
+    [['courts', 'Courts'], ['golf', 'Golf Sim']].forEach(function (o) {
+      const on = viewTab === o[0];
+      seg.append(h('button', {
+        type: 'button', class: 'seg-btn' + (on ? ' on' : ''), 'aria-pressed': on ? 'true' : 'false', text: o[1],
+        onclick: function () { if (viewTab !== o[0]) { viewTab = o[0]; setHint(''); barHint = ''; renderControls(); renderGrid(); renderSelbar(); } },
+      }));
+    });
+    row.append(seg);
     controlsSlot.append(row);
   }
 
@@ -240,7 +239,7 @@ export async function renderBook(root, ctx) {
     const grid = h('div', { class: 'slotgrid', role: 'table', 'aria-label': 'Availability for ' + fmtDay(day.date), style: '--cols:' + cols.length });
     const head = h('div', { class: 'srow shead', role: 'row' }, h('span', { class: 'tcol', role: 'columnheader', text: 'Time' }));
     cols.forEach(function (r) {
-      head.append(h('div', { class: 'ccol', role: 'columnheader' }, h('span', { text: r.name }), multi ? wholeButton(day, r) : null));
+      head.append(h('div', { class: 'ccol', role: 'columnheader' }, h('span', { text: r.name }), limit() === null ? wholeButton(day, r) : null));
     });
     grid.append(head);
     day.blocks.forEach(function (b) {
@@ -258,7 +257,7 @@ export async function renderBook(root, ctx) {
   function slotCell(b, key) {
     const st = (b.slots && b.slots[key]) || 'busy';
     const label = resName(key) + ', ' + timeRange(b.start, b.end, true);
-    if (st === 'free' && multi) {
+    if (st === 'free') {
       const pk = pkOf(key, b.start);
       const on = picks.has(pk);
       return h('div', { class: 'cw', role: 'cell' }, h('button', {
@@ -266,12 +265,6 @@ export async function renderBook(root, ctx) {
         'aria-label': label + (on ? ', selected. Tap to deselect.' : ', open. Tap to select.'),
         onclick: function () { togglePick(b, key); },
       }, icon(on ? 'check' : 'plus', 14), h('span', { text: on ? 'Selected' : 'Open' })));
-    }
-    if (st === 'free') {
-      return h('button', {
-        type: 'button', class: 'cell open', role: 'cell', 'aria-label': label + ', open. Tap to book.',
-        onclick: function () { openBooking(b, key); },
-      }, icon('plus', 14), h('span', { text: 'Open' }));
     }
     if (st === 'mine') {
       return h('a', { class: 'cell mine', role: 'cell', href: '#/bookings', 'aria-label': label + ', yours. View my bookings.' },
@@ -289,12 +282,16 @@ export async function renderBook(root, ctx) {
       h('li', null, h('span', { class: 'swatch past' }), 'Past'));
   }
 
-  // ---- multi-select ----
+  // ---- tap to select ----
   function togglePick(b, key) {
     const pk = pkOf(key, b.start);
+    const max = limit();
+    barHint = '';
     if (picks.has(pk)) picks.delete(pk);
+    else if (max === 1) { picks.clear(); picks.set(pk, { resource_id: key, start: b.start, end: b.end }); } // one slot: move the selection
+    else if (max !== null && picks.size >= max) barHint = 'You can select up to ' + max + ' time slots at a time.';
     else picks.set(pk, { resource_id: key, start: b.start, end: b.end });
-    hintSlot.textContent = '';
+    setHint('');
     renderGrid(pk); renderSelbar();
   }
 
@@ -336,9 +333,9 @@ export async function renderBook(root, ctx) {
     const all = blocks.length > 0 && blocks.every(function (b) { return picks.has(pkOf(key, b.start)); });
     if (all) {
       blocks.forEach(function (b) { picks.delete(pkOf(key, b.start)); });
-      hintSlot.textContent = '';
+      setHint('');
     } else if (!blocks.length) {
-      hintSlot.textContent = 'Nothing is open in ' + r.name + ' on this day.';
+      setHint('Nothing is open in ' + r.name + ' on this day.');
     } else {
       if (cap) {
         // Replace this column's picks for the day so the capped run stands alone.
@@ -348,7 +345,7 @@ export async function renderBook(root, ctx) {
         });
       }
       blocks.forEach(function (b) { picks.set(pkOf(key, b.start), { resource_id: key, start: b.start, end: b.end }); });
-      hintSlot.textContent = cap ? r.name + ' bookings can be up to ' + cap + ' hours.' : '';
+      setHint(cap ? r.name + ' bookings can be up to ' + cap + ' hours.' : '');
     }
     renderGrid('whole|' + key); renderSelbar();
   }
@@ -356,14 +353,16 @@ export async function renderBook(root, ctx) {
   function renderSelbar() {
     clear(selbar);
     const n = picks.size;
-    const show = multi && n > 0;
+    const show = n > 0;
     selbar.hidden = !show;
     gridSlot.classList.toggle('has-selbar', show);
     if (!show) return;
-    selbar.append(h('div', { class: 'selbar-in' },
-      h('span', { class: 'selcount', 'aria-live': 'polite', text: n + ' selected' }),
-      h('button', { type: 'button', class: 'btn', text: 'Clear', onclick: function () { picks.clear(); hintSlot.textContent = ''; renderGrid(); renderSelbar(); } }),
-      h('button', { type: 'button', class: 'btn primary', text: 'Book selected', onclick: function () { openMulti(); } })));
+    if (barHint) selbar.append(h('p', { class: 'hint selbar-hint', role: 'status', text: barHint }));
+    selbar.append(
+      h('div', { class: 'selbar-in' },
+        h('span', { class: 'selcount', 'aria-live': 'polite', text: n + ' selected' }),
+        h('button', { type: 'button', class: 'btn', text: 'Clear', onclick: function () { picks.clear(); barHint = ''; setHint(''); renderGrid(); renderSelbar(); } }),
+        h('button', { type: 'button', class: 'btn primary', text: 'Book', onclick: function () { openSelected(); } })));
   }
 
   // ---- opening the booking sheet ----
@@ -372,14 +371,11 @@ export async function renderBook(root, ctx) {
     if (ctx.stale()) return;
     try { await loadAvail(); prunePicks(); renderPicker(); renderGrid(); renderSelbar(); } catch (e) { /* ignore */ }
   }
-  function openBooking(block, key) {
-    bookingSheet(ctx, resources, resName, [{ resource_id: key, start: block.start, end: block.end }], { onChanged: refreshAfterBooking });
-  }
-  function openMulti() {
+  function openSelected() {
     if (!picks.size) return;
     bookingSheet(ctx, resources, resName, Array.from(picks.values()), {
       onChanged: refreshAfterBooking,
-      onBooked: function () { picks.clear(); multi = false; hintSlot.textContent = ''; renderControls(); renderGrid(); renderSelbar(); },
+      onBooked: function () { picks.clear(); barHint = ''; setHint(''); renderGrid(); renderSelbar(); },
     });
   }
 
@@ -415,54 +411,55 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
   const state = ctx.state, me = state.me, settings = me.settings;
   const priv = isPriv(me);
   const isOwner = me.member.is_owner === true || me.member.role === 'Owner';
-  const merged = priv ? mergeSessions(sessions) : sessions.slice();
+  const merged = mergeSessions(sessions);
   const multi = merged.length > 1;
   const resList = merged.map(function (s) {
     return resources.filter(function (r) { return r.resource_id === s.resource_id; })[0] ||
       { resource_id: s.resource_id, courts: s.resource_id === 'BOTH' ? 2 : 1, rate_per_hour: 0, block_hours: settings.block_hours };
   });
-  const block = merged[0];
-  const key = block.resource_id;
-  const res = resList[0];
   const maxPlayers = settings.max_players_per_court * Math.min.apply(null, resList.map(function (r) { return r.courts || 1; }));
-  const total = priv ? 0 : res.rate_per_hour * res.block_hours;
-  const slotDate = block.start.slice(0, 10);
-  const inThisWeek = !priv && slotDate >= me.week.week_start && slotDate <= me.week.week_end;
-  const limitHit = !priv && inThisWeek && me.week.used >= me.week.limit;
+  // Each merged booking costs rate x hours; one slot is one block of the resource's block_hours.
+  const prices = merged.map(function (s, i) { return priv ? 0 : (Number(resList[i].rate_per_hour) || 0) * hoursBetween(s.start, s.end); });
+  const total = prices.reduce(function (a, b) { return a + b; }, 0);
+  // Weekly limit counted by slot, per calendar week. Only this week's usage is known here; the engine checks the rest.
+  const weekSlots = {};
+  merged.forEach(function (s, i) {
+    const bh = Number(resList[i].block_hours) || Number(settings.block_hours) || 2;
+    const wk = mondayOf(s.start.slice(0, 10));
+    weekSlots[wk] = (weekSlots[wk] || 0) + Math.max(1, Math.round(hoursBetween(s.start, s.end) / bh));
+  });
+  const limitHit = !priv && Object.keys(weekSlots).some(function (wk) {
+    const used = wk === me.week.week_start ? me.week.used : 0;
+    return used + weekSlots[wk] > me.week.limit;
+  });
   const termsNeeded = !priv && !!me.terms && !me.terms.accepted;
   const capErrors = [];
-  if (priv) {
-    merged.forEach(function (s, i) {
-      const cap = Number(resList[i].max_hours) || 0;
-      if (cap && hoursBetween(s.start, s.end) > cap) {
-        const msg = resList[i].name + ' bookings can be up to ' + cap + ' hours.';
-        if (capErrors.indexOf(msg) === -1) capErrors.push(msg);
-      }
-    });
-  }
+  merged.forEach(function (s, i) {
+    const cap = Number(resList[i].max_hours) || 0;
+    if (cap && hoursBetween(s.start, s.end) > cap) {
+      const msg = resList[i].name + ' bookings can be up to ' + cap + ' hours.';
+      if (capErrors.indexOf(msg) === -1) capErrors.push(msg);
+    }
+  });
 
-  const sheet = openSheet(priv ? (isOwner ? 'Book' : (multi ? 'Request bookings' : 'Request a booking')) : 'Request a booking', hooks.onChanged);
+  const sheet = openSheet(isOwner ? 'Book' : (multi ? 'Request bookings' : 'Request a booking'), hooks.onChanged);
   const body = sheet.body;
   const guests = []; // { member_id?, first_name, last_name, email?, phone?, isNew }
   let payMode = 'Split';
   let known = [];
   let addingNew = false;
 
-  const summary = priv
-    ? h('div', { class: 'summary' }, h('ul', { class: 'sessions' }, merged.map(function (s) {
-      return h('li', null, h('strong', { text: resName(s.resource_id) }),
-        h('span', { class: 'mono', text: ' · ' + shortDay(s.start) + ' · ' + timeRange(s.start, s.end, true) }));
-    })))
-    : h('div', { class: 'summary' },
-      h('strong', { text: resName(key) }),
-      h('span', { class: 'mono', text: fmtRange(block.start, block.end) }));
+  const summary = h('div', { class: 'summary' }, h('ul', { class: 'sessions' }, merged.map(function (s) {
+    return h('li', null, h('strong', { text: resName(s.resource_id) }),
+      h('span', { class: 'mono', text: ' · ' + shortDay(s.start) + ' · ' + timeRange(s.start, s.end, true) }));
+  })));
 
   const playersSlot = h('div');
   const knownSlot = h('div');
   const newSlot = h('div');
   const priceSlot = h('div', { class: 'price', 'aria-live': 'polite' });
   const errSlot = h('div');
-  const submit = h('button', { class: 'btn primary block', type: 'button', text: priv ? (isOwner ? 'Book' : 'Request bookings') : 'Request booking' });
+  const submit = h('button', { class: 'btn primary block', type: 'button', text: isOwner ? 'Book' : (multi ? 'Request bookings' : 'Request booking') });
 
   const radios = [['Split', 'Everyone pays their share'], ['BookerPays', "I'll cover everyone"]].map(function (o, i) {
     const input = h('input', { type: 'radio', name: 'paymode', value: o[0], id: 'pm' + i, checked: o[0] === 'Split' });
@@ -546,10 +543,11 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
     const n = guests.length + 1;
     if (priv) { priceSlot.append(h('p', { text: 'Free for owner and family.' })); return; }
     if (payMode === 'BookerPays') {
-      priceSlot.append(h('p', null, 'You pay ', h('strong', { class: 'mono', text: money(total) }), ' for the whole booking.'));
+      priceSlot.append(h('p', null, 'You pay ', h('strong', { class: 'mono', text: money(total) }), multi ? ' for all the bookings.' : ' for the whole booking.'));
     } else {
-      const each = Math.ceil(total * 100 / n) / 100;
-      const even = Math.round(total * 100) % n === 0;
+      // Per person, summed over the merged bookings (each booking is split on its own).
+      const each = prices.reduce(function (a, p) { return a + Math.ceil(p * 100 / n) / 100; }, 0);
+      const even = prices.every(function (p) { return Math.round(p * 100) % n === 0; });
       priceSlot.append(h('p', null, 'Total ', h('span', { class: 'mono', text: money(total) }), ' · ',
         h('strong', { class: 'mono', text: (even ? '' : 'About ') + money(each) + ' each' }), ' for ' + n + (n === 1 ? ' player' : ' players')));
     }
@@ -558,10 +556,11 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
   function refresh() { renderPlayers(); renderKnown(); renderNew(); renderPrice(); }
 
   const usageMsg = priv ? 'No weekly limit.' : (me.week.used + ' of ' + me.week.limit + ' bookings used this week');
+  const limitMsg = !priv && limitHit ? 'This would go over your ' + me.week.limit + ' bookings this week (each 2-hour time counts as one).' : '';
   add(body,
     summary,
     h('p', { class: 'usage', text: usageMsg }),
-    limitHit ? banner("You've used all of this week's bookings. Pick a day next week.") : null,
+    limitHit ? banner(limitMsg) : null,
     capErrors.map(function (m) { return banner(m); }),
     h('h3', { class: 'small-h', text: 'Players' }), playersSlot, knownSlot, newSlot,
     priv ? null : h('fieldset', { class: 'paymode' }, h('legend', { text: 'Payment' }), h('div', { class: 'segs' }, radios)),
@@ -587,16 +586,13 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
       return g.member_id ? { member_id: g.member_id } : { first_name: g.first_name, last_name: g.last_name, email: g.email, phone: g.phone };
     });
     try {
-      if (priv) {
-        const out = await call('createBookings', {
-          sessions: merged.map(function (s) { return { resource_id: s.resource_id, start: s.start, end: s.end }; }),
-          guests: payload,
-        });
-        showDone(out.bookings || []);
-      } else {
-        const out = await call('createBooking', { resource_id: key, start: block.start, pay_mode: payMode, guests: payload });
-        showDone([out.booking]);
-      }
+      const req = {
+        sessions: merged.map(function (s) { return { resource_id: s.resource_id, start: s.start, end: s.end }; }),
+        guests: payload,
+      };
+      if (!priv) req.pay_mode = payMode;
+      const out = await call('createBookings', req);
+      showDone(out.bookings || []);
     } catch (err) {
       errSlot.append(banner(err));
       if (err.code === 'TERMS_REQUIRED') errSlot.append(h('a', { class: 'btn primary block', href: termsLink('book'), text: 'Read and accept the terms' }));
