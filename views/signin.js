@@ -45,6 +45,7 @@ export async function renderSignin(root, ctx) {
     card.append(form);
     if (notice) slot.append(banner(notice, 'info'));
     if (isMock()) card.append(h('p', { class: 'hint demo-hint', text: 'Demo: any email works. Use alex@example.com to see the member view. The code is 123456.' }));
+    if (isMock()) card.append(h('p', { class: 'hint demo-hint' }, 'Demo: try a ', h('a', { href: '#/go?t=demo-guardian-sign', text: 'parent/guardian signing link' }), ' or a ', h('a', { href: '#/go?t=demo-booking-approve', text: 'booking approval link' }), '.'));
     card.append(h('p', { class: 'center' }, 'Not a member yet? ', h('a', { href: '#/join', text: 'Request membership' })));
   }
 
@@ -59,7 +60,8 @@ export async function renderSignin(root, ctx) {
     const btn = h('button', { class: 'btn primary block', type: 'submit', text: 'Sign in' });
     const form = h('form', { novalidate: true },
       h('p', { id: 'code-hint', class: 'hint', text: 'Enter the 6-digit code sent to ' + email + '.' }),
-      field('Code', input), slot, btn);
+      field('Code', input), slot, btn,
+      h('p', { class: 'hint spam-tip', text: "Didn't get the code? Check your spam or junk folder. Adding hackersportsfacility@gmail.com to your contacts helps." }));
     form.addEventListener('submit', async function (e) {
       e.preventDefault();
       clear(slot);
@@ -133,6 +135,7 @@ export async function renderJoin(root, ctx) {
       card.append(h('div', { class: 'thanks' },
         h('h2', { text: 'Thank you' }),
         h('p', { text: 'Your request is in. The owner will review it and email you at ' + body.email + ' when it is approved.' }),
+        h('p', { class: 'hint spam-tip', text: 'Watch for an email from hackersportsfacility@gmail.com, and check your spam folder.' }),
         h('a', { class: 'btn', href: '#/signin', text: 'Back to sign in' })));
     } catch (err) {
       slot.append(banner(err));

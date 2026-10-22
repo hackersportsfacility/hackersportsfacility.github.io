@@ -213,6 +213,8 @@ function run(req) {
     if (a === 'requestMembership') return requestMembership(req);
     if (a === 'requestCode') return requestCode(req);
     if (a === 'verifyCode') return verifyCode(req);
+    if (a === 'linkInfo') return linkInfo(req);
+    if (a === 'linkConfirm') return linkConfirm(req);
 
     const v = viewer(req.token);
     if (!v) return err('UNAUTHORIZED', 'Please sign in again.');
@@ -246,6 +248,79 @@ function run(req) {
   } catch (e) {
     return err('SERVER', 'Something went wrong in the demo. ' + (e && e.message));
   }
+}
+
+// ---- email links (Release 2.2): sample tokens for #/go ----
+// Booking and member links act on the first Pending booking / member in the demo data; guardian links only track a flag.
+export const DEMO_LINKS = [
+  ['demo-booking-approve', 'Booking request: approve'],
+  ['demo-booking-reject', 'Booking request: reject'],
+  ['demo-member-approve', 'New member: approve'],
+  ['demo-member-reject', 'New member: reject'],
+  ['demo-guardian-sign', 'Parent or guardian: sign'],
+  ['demo-expired', 'Expired link'],
+  ['demo-bogus', 'Invalid link'],
+];
+const linkDone = {};
+function linkParts(t) {
+  const m = /^demo-(booking|member|guardian)-(approve|reject|sign)$/.exec(String(t || ''));
+  return m ? { kind: m[1], d: m[2] } : null;
+}
+function linkInfo(r) {
+  const t = String(r.t || '');
+  if (t === 'demo-expired') return ok({ kind: 'booking', d: 'approve', state: 'expired', summary: 'This link has expired. Ask for a new email and try again.', details: [] });
+  const p = linkParts(t);
+  if (!p) return ok({ kind: '', d: '', state: 'invalid', summary: 'This link is not valid. Please use the link from your most recent email.', details: [] });
+  const base = { kind: p.kind, d: p.d };
+  if (p.kind === 'booking') {
+    const b = bookings.filter(function (x) { return x.status === 'Pending'; })[0];
+    if (linkDone[t] || !b) return ok(Object.assign(base, { state: 'already', summary: 'This booking request was already decided. Nothing more is needed.', details: [] }));
+    const bk = memById(b.booker);
+    const day = b.start.slice(0, 10);
+    return ok(Object.assign(base, {
+      state: 'ready',
+      summary: (p.d === 'reject' ? 'Reject ' : 'Approve ') + resById(b.resource_id).name + ', ' + dowName(day) + ' ' + monthName(day) + ' ' + dayNum(day) + ', ' + timeRange(b.start, b.end, true) + ' for ' + bk.first_name + ' ' + bk.last_name + '?',
+      details: [
+        { label: 'Players', value: b.players.map(function (x) { const m = memById(x.member_id); return m.first_name + ' ' + m.last_name; }).join(', ') },
+        { label: 'Price', value: '$' + b.total_amount.toFixed(2) },
+      ],
+    }));
+  }
+  if (p.kind === 'member') {
+    const m = members.filter(function (x) { return x.status === 'Pending'; })[0];
+    if (linkDone[t] || !m) return ok(Object.assign(base, { state: 'already', summary: 'This membership request was already decided. Nothing more is needed.', details: [] }));
+    return ok(Object.assign(base, {
+      state: 'ready', summary: (p.d === 'reject' ? 'Reject' : 'Approve') + ' membership for ' + m.first_name + ' ' + m.last_name + '?',
+      details: [{ label: 'Name', value: m.first_name + ' ' + m.last_name }, { label: 'Email', value: m.email }],
+    }));
+  }
+  if (linkDone[t]) return ok(Object.assign(base, { state: 'already', summary: 'This agreement was already signed. Thank you.', details: [] }));
+  return ok(Object.assign(base, {
+    state: 'ready', summary: 'Parent or guardian signature for Riley Smith',
+    details: [{ label: 'Participant', value: 'Riley Smith' }, { label: 'Date of birth', value: '06/14/2012' }, { label: 'Requested by', value: 'Alex Smith' }],
+    agreement: WAIVER_TEXT,
+  }));
+}
+function linkConfirm(r) {
+  const t = String(r.t || '');
+  const info = linkInfo({ t: t }).data;
+  if (info.state === 'invalid' || info.state === 'expired') return err('BAD_REQUEST', info.summary);
+  if (info.state === 'already') return ok({ ok: true, message: info.summary, final: true });
+  if (info.kind === 'guardian') {
+    if (!String(r.name || '').trim()) return err('BAD_REQUEST', 'Please type your full legal name to sign.');
+    linkDone[t] = true;
+    return ok({ ok: true, message: "Thank you. The agreement is signed and Riley's waiver is on file.", final: true });
+  }
+  linkDone[t] = true;
+  const approve = info.d === 'approve';
+  if (info.kind === 'booking') {
+    const b = bookings.filter(function (x) { return x.status === 'Pending'; })[0];
+    b.status = approve ? 'Approved' : 'Rejected';
+    return ok({ ok: true, message: approve ? 'Approved. The booker has been emailed.' : 'Rejected. The booker has been emailed.', final: true });
+  }
+  const m = members.filter(function (x) { return x.status === 'Pending'; })[0];
+  m.status = approve ? 'Active' : 'Rejected';
+  return ok({ ok: true, message: approve ? 'Approved. ' + m.first_name + ' can now sign in.' : 'Rejected. ' + m.first_name + ' has been notified.', final: true });
 }
 
 function requestMembership(r) {

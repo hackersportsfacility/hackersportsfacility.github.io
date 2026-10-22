@@ -44,7 +44,7 @@ function bodyNodes(body) {
 }
 
 // Returns { el, end } where end is the sentinel placed after the last section.
-function agreementEl(t) {
+export function agreementEl(t) {
   const end = h('div', { class: 'agreement-end', 'aria-hidden': 'true' });
   const el = h('article', { class: 'agreement', tabindex: '0', 'aria-label': 'Participant Agreement text' },
     h('p', { class: 'hint', text: 'Version ' + t.version + ' · Effective ' + t.effective }),
@@ -54,6 +54,22 @@ function agreementEl(t) {
     (t.sections || []).map(function (s) { return h('section', null, h('h3', { text: s.heading }), bodyNodes(s.body)); }),
     end);
   return { el: el, end: end };
+}
+
+// Calls fn once, when `end` has been scrolled into view (the scroll gate, shared with the #/go guardian page).
+export function onReachEnd(end, fn) {
+  if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver(function (entries) {
+      if (entries.some(function (e) { return e.isIntersecting; })) { fn(); io.disconnect(); }
+    });
+    io.observe(end);
+  } else {
+    const check = function () {
+      if (end.getBoundingClientRect().top <= window.innerHeight) { fn(); window.removeEventListener('scroll', check); }
+    };
+    window.addEventListener('scroll', check, { passive: true });
+    check();
+  }
 }
 
 // ---- dates ----
@@ -181,6 +197,7 @@ export async function renderWaiver(root, ctx) {
       h('div', { class: 'done-mark' }, icon('clock', 30)),
       h('p', { class: 'done-msg', text: justSent ? 'Almost done' : 'Waiting for your parent or guardian' }),
       h('p', { text: 'We emailed ' + (guardianEmail || 'your parent or guardian') + '. Your waiver will be on file once they sign. The link works for 14 days.' }),
+      h('p', { class: 'hint spam-tip', text: 'Ask your parent or guardian to check their spam folder for an email from hackersportsfacility@gmail.com.' }),
       slot,
       h('div', { class: 'btn-row' }, rows)));
   }
@@ -272,18 +289,7 @@ export async function renderWaiver(root, ctx) {
       fields.disabled = false;
       gate.textContent = 'You have reached the end of the agreement. Fill in your details below.';
     }
-    if ('IntersectionObserver' in window) {
-      const io = new IntersectionObserver(function (entries) {
-        if (entries.some(function (e) { return e.isIntersecting; })) { unlock(); io.disconnect(); }
-      });
-      io.observe(ag.end);
-    } else {
-      const check = function () {
-        if (ag.end.getBoundingClientRect().top <= window.innerHeight) { unlock(); window.removeEventListener('scroll', check); }
-      };
-      window.addEventListener('scroll', check, { passive: true });
-      check();
-    }
+    onReachEnd(ag.end, unlock);
 
     function problem() {
       const need = [[name, 'your full legal name'], [phone, 'your mobile phone'], [ecName, 'an emergency contact name'], [ecPhone, 'an emergency contact phone']];

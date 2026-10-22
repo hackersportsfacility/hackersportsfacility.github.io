@@ -1,4 +1,4 @@
-import { call } from '../api.js';
+import { call, isMock } from '../api.js';
 import { h, clear, fmtRange, fmtDay, fmtDate, timeRange, money, fullName, parseLocal } from '../util.js';
 import { banner, skeleton, pill, rolePill, field, setBusy } from '../ui.js';
 
@@ -13,6 +13,12 @@ export async function renderOwner(root, ctx) {
   const blockSlot = h('section', { class: 'card' });
   const membersSlot = h('section');
   root.append(h('h1', { text: 'Owner' }), dashSlot, blockSlot, membersSlot);
+  if (isMock()) {
+    import('../mock.js').then(function (m) {
+      root.append(h('details', { class: 'card demo-links' }, h('summary', { text: 'Demo: open an email approval link' }),
+        h('ul', null, m.DEMO_LINKS.map(function (l) { return h('li', null, h('a', { href: '#/go?t=' + l[0], text: l[1] })); }))));
+    });
+  }
   dashSlot.append(skeleton(4, true));
 
   async function loadDash() {

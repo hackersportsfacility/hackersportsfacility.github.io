@@ -3,7 +3,7 @@ import { API_URL } from './config.js';
 
 export const NETWORK_MESSAGE = "Can't reach the booking system. Check your connection and try again.";
 const TOKEN_KEY = 'hsf_token';
-const PUBLIC_ACTIONS = ['ping', 'requestMembership', 'requestCode', 'verifyCode'];
+const PUBLIC_ACTIONS = ['ping', 'requestMembership', 'requestCode', 'verifyCode', 'linkInfo', 'linkConfirm'];
 let memToken = '';
 
 export class ApiError extends Error {

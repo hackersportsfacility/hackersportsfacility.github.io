@@ -8,6 +8,7 @@ import { renderBookings } from './views/bookings.js';
 import { renderOwner } from './views/owner.js';
 import { renderAccount } from './views/account.js';
 import { renderWaiver } from './views/waiver.js';
+import { renderGo } from './views/go.js';
 
 // avail: last availability payload ({ days }); fromCache: true while showing cached data until the live
 // startup call lands; refreshFailed: the live refresh failed; onFresh: set by the Book view.
@@ -18,6 +19,7 @@ let currentRoute = '';
 const ROUTES = {
   signin: { title: 'Sign in', render: renderSignin, public: true },
   join: { title: 'Request membership', render: renderJoin, public: true },
+  go: { title: 'Email link', render: renderGo, public: true, stay: true },
   book: { title: 'Book a court', render: renderBook },
   bookings: { title: 'My bookings', render: renderBookings },
   owner: { title: 'Owner', render: renderOwner, owner: true },
@@ -153,7 +155,7 @@ async function route() {
   if (!def) name = state.member ? 'book' : 'signin';
   def = ROUTES[name];
   if (!state.member && !def.public) { name = 'signin'; def = ROUTES.signin; }
-  else if (state.member && def.public) { name = 'book'; def = ROUTES.book; }
+  else if (state.member && def.public && !def.stay) { name = 'book'; def = ROUTES.book; }
   else if (def.owner && !(state.member && state.member.is_owner)) { name = 'book'; def = ROUTES.book; }
   const wanted = '#/' + name;
   // A matching route keeps its ?query (Stripe return params); the view reads and then clears it.
