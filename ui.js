@@ -1,5 +1,5 @@
 // Shared UI pieces: banners, skeletons, pills, modal sheet.
-import { h, icon, clear, termsLink } from './util.js';
+import { h, icon, clear, termsLink, money } from './util.js';
 import { friendlyMessage, call, clearCache } from './api.js';
 
 export function banner(errOrMsg, kind) {
@@ -38,6 +38,7 @@ const SHARE_PILL = {
   Paid: ['ok', 'Paid'], Pending: ['warn', 'Pending'], Unpaid: ['danger', 'Unpaid'],
   CoveredByBooker: ['muted', 'Covered by booker'], Waived: ['muted', 'Waived'],
   Cancelled: ['muted', 'Cancelled'], Refunded: ['court', 'Refunded'], Credited: ['ok', 'Credited'],
+  Owed: ['danger', 'Owed'], BookerOwes: ['warn', 'Booker owes'],
 };
 export function sharePill(status) {
   const d = SHARE_PILL[status];
@@ -78,6 +79,55 @@ export async function startCardFlow(btn, errSlot, returnTo, onSaved) {
   }
   errSlot.append(banner('Could not open the card page. Please try again.'));
   setBusy(btn, false);
+}
+
+// True when a member owes money (Amount Owed). Owner and Family never do; an older saved `me` has no `owed` at all.
+export function owedAmount(me) {
+  const o = me && me.owed;
+  return o && Number(o.amount) > 0 ? Number(o.amount) : 0;
+}
+
+// The red "Amount owed" card (Account and Book). onPaid() runs after a successful payment: reload `me` and repaint.
+// A declined card (or no card) offers Add / Replace card right here; returnTo is 'book' or omitted (Account).
+export function owedCard(me, returnTo, onPaid) {
+  if (!owedAmount(me)) return null;
+  const items = (me.owed.items || []);
+  const errSlot = h('div', { 'aria-live': 'polite' });
+  const cardSlot = h('div');
+  const pay = h('button', { class: 'btn danger', type: 'button', text: 'Pay now' });
+  pay.addEventListener('click', async function () {
+    clear(errSlot);
+    clear(cardSlot);
+    setBusy(pay, true, 'Paying…');
+    try {
+      await call('payOwed', {});
+      clearCache();
+      await onPaid();
+    } catch (e) {
+      errSlot.append(banner(e));
+      if (e && (e.code === 'CARD_DECLINED' || e.code === 'NO_CARD')) {
+        const label = e.code === 'NO_CARD' ? 'Add payment card' : 'Replace card';
+        const fix = h('button', { class: 'btn primary', type: 'button', text: label });
+        fix.addEventListener('click', function () {
+          startCardFlow(fix, errSlot, returnTo, async function () {
+            clear(errSlot);
+            errSlot.append(banner('Card saved. Tap Pay now to try again.', 'info'));
+            clear(cardSlot);
+            await onPaid(true); // reload details only; this card stays so the member can pay
+          });
+        });
+        cardSlot.append(fix);
+      }
+      setBusy(pay, false);
+    }
+  });
+  return h('section', { class: 'card owed-card', role: 'region', 'aria-label': 'Amount owed' },
+    h('h2', { text: 'Amount owed: ' + money(owedAmount(me)) }),
+    h('ul', { class: 'players detail' }, items.map(function (it) {
+      return h('li', null, h('span', { text: it.resource_name + ', ' + it.when }), h('span', { class: 'mono share', text: money(it.amount) }));
+    })),
+    h('p', { class: 'hint', text: 'You can’t make new bookings or accept invitations until this is paid. Facility credit is used first.' }),
+    errSlot, h('div', { class: 'btn-row' }, pay, cardSlot));
 }
 
 export function setBusy(btn, busy, busyLabel) {

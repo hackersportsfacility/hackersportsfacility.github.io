@@ -173,6 +173,8 @@ export async function renderGo(root, ctx) {
         message('ok', doneText || (r && r.message));
       } catch (e) {
         errSlot.append(banner(e));
+        // Someone who owes money must pay first (Amount Owed): send them to the Account screen, where Pay now is.
+        if (e && e.code === 'AMOUNT_OWED') errSlot.append(h('a', { class: 'btn primary block', href: '#/account', text: 'Go to Account to pay' }));
         setBusy(btn, false);
         acceptBtn.disabled = false; declineBtn.disabled = false;
       }

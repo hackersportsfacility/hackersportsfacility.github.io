@@ -32,7 +32,7 @@ export async function renderOwner(root, ctx) {
     }
     if (ctx.stale()) return;
     clear(dashSlot);
-    add(dashSlot, stats(d), pendingBookings(d), lateCancellations(d), pendingMembers(d), awaitingGuardian(d), upcoming(d));
+    add(dashSlot, stats(d), pendingBookings(d), owedSection(d), lateCancellations(d), pendingMembers(d), awaitingGuardian(d), upcoming(d));
   }
 
   function stats(d) {
@@ -280,6 +280,56 @@ export async function renderOwner(root, ctx) {
     return sec;
   }
 
+  // Amount owed: members who owe the facility money (their own share, or a share their card could not cover).
+  // Mark as paid (cash or another way) or Waive (forgive it); both ask first, like the other panels.
+  function owedSection(d) {
+    const list = d.owed || [];
+    if (!list.length) return null;
+    const total = list.reduce(function (s, x) { return s + (Number(x.amount) || 0); }, 0);
+    const sec = h('section', null, h('h2', { text: 'Amount owed (' + list.length + ') · ' + money(total) }));
+    list.forEach(function (o) {
+      const panelSlot = h('div');
+      const actions = h('div', { class: 'btn-row' });
+      const showActions = function () {
+        clear(panelSlot); clear(actions);
+        actions.append(
+          h('button', { class: 'btn primary', type: 'button', text: 'Mark as paid', 'aria-label': 'Mark ' + o.name + ' as paid', onclick: function () { open('paid'); } }),
+          h('button', { class: 'btn danger-ghost', type: 'button', text: 'Waive', 'aria-label': 'Waive what ' + o.name + ' owes', onclick: function () { open('waive'); } }));
+      };
+      function open(how) {
+        clear(panelSlot); clear(actions);
+        const errSlot = h('div', { 'aria-live': 'polite' });
+        const note = h('input', { type: 'text', maxlength: '200', autocomplete: 'off' });
+        const go = h('button', { class: 'btn ' + (how === 'paid' ? 'primary' : 'danger'), type: 'button', text: how === 'paid' ? 'Yes, mark as paid' : 'Yes, waive' });
+        go.addEventListener('click', async function () {
+          clear(errSlot);
+          if (how === 'waive' && !note.value.trim()) { errSlot.append(banner('Please type a reason.')); note.focus(); return; }
+          setBusy(go, true, 'Saving…');
+          try {
+            await call('ownerSettleOwed', { member_id: o.member_id, how: how, note: note.value.trim() || undefined });
+            await loadDash();
+            loadMembers();
+          } catch (e) { errSlot.append(banner(e)); setBusy(go, false); }
+        });
+        panelSlot.append(h('div', { class: 'confirm', role: 'alertdialog', 'aria-label': how === 'paid' ? 'Confirm mark as paid' : 'Confirm waive' },
+          h('p', { text: (how === 'paid' ? 'Mark ' + money(o.amount) + ' as paid by ' : 'Waive the ' + money(o.amount) + ' that ') + o.name + (how === 'paid' ? '?' : ' owes?') }),
+          h('p', { class: 'hint', text: how === 'paid' ? 'Use this when they paid you in cash or another way. No card is charged.' : 'They will no longer owe it and can book again. No card is charged.' }),
+          field(how === 'paid' ? 'Note (optional)' : 'Reason (required)', note), errSlot,
+          h('div', { class: 'btn-row' }, go, h('button', { class: 'btn', type: 'button', text: 'Back', onclick: showActions }))));
+        note.focus();
+      }
+      showActions();
+      sec.append(h('article', { class: 'card booking' },
+        h('div', { class: 'bk-head' }, h('div', null, h('h3', { text: o.name }), h('p', { class: 'hint', text: o.email || '' })),
+          h('span', { class: 'pill danger mono', text: money(o.amount) })),
+        h('ul', { class: 'players detail' }, (o.items || []).map(function (it) {
+          return h('li', null, h('span', { text: it.resource_name + ', ' + it.when }), h('span', { class: 'mono share', text: money(it.amount) }));
+        })),
+        panelSlot, actions));
+    });
+    return sec;
+  }
+
   // ---- block time ----
   async function loadBlock() {
     clear(blockSlot);
@@ -385,7 +435,9 @@ export async function renderOwner(root, ctx) {
     // Unpaid shares the booker had to cover (Strikes tab). Owner and Family play free, so they never get any.
     function strikesLine(mm) {
       const n = Number(mm.strike_count) || 0;
-      return h('p', { class: 'hint' }, h('span', { class: 'pill ' + (n ? 'warn' : 'muted'), text: n + (n === 1 ? ' strike' : ' strikes') }));
+      const owes = Number(mm.amount_owed) || 0;
+      return h('p', { class: 'hint' }, h('span', { class: 'pill ' + (n ? 'warn' : 'muted'), text: n + (n === 1 ? ' strike' : ' strikes') }),
+        owes > 0 ? ' ' : null, owes > 0 ? h('span', { class: 'pill danger', text: 'Owes ' + money(owes) }) : null);
     }
   function paint(mm) {
       clear(card); clear(actions);

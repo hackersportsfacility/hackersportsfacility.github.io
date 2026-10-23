@@ -1,6 +1,6 @@
 // In-memory fake of the booking engine (docs/phase1-api-contract.md). Demo mode only.
 // Sign in with any email (alex@example.com = member (slot limit 1), priya@example.com = member (slot limit 3), jordan@example.com = family, anything else = owner). Code: 123456.
-import { pad, ymdOf, hoursUntil, todayYmd, addDays, nowLocal, mondayOf, parseLocal, dowName, monthName, dayNum, timeRange } from './util.js';
+import { pad, ymdOf, hoursUntil, todayYmd, addDays, nowLocal, mondayOf, parseLocal, dowName, monthName, dayNum, timeRange, fmtRange } from './util.js';
 
 const FACILITY = 'Hacker Sports Facility';
 const SETTINGS = { open_hour: 6, close_hour: 22, block_hours: 2, max_players_per_court: 4, free_cancel_hours: 24 };
@@ -136,6 +136,14 @@ setShare(9, 'M0003', 'Paid');
 bookings[9].cancelled_at = dayAt(-3, 7);
 bookings[9].late_reason = 'My son came down with the flu and we could not make it.';
 bookings[9].late_decision = '';
+// Amount owed: Priya's own share of a finished booking was never paid, so she owes it (Pay now on Account and Book).
+// Her first Pay now is declined (demo) so Replace card can be tried; a replaced card then works.
+const owedBk = addBooking({ resource_id: 'COURT2', start: dayAt(-6, 10), status: 'Completed', booker: 'M0004', guests: ['M0003'] });
+owedBk.players[0].share_status = 'Owed';
+owedBk.players[0].owed_by = 'M0004';
+owedBk.players[1].share_status = 'Paid';
+memById('M0004').card = { brand: 'visa', last4: '0002', exp: '12/30' };
+memById('M0004').declineNext = true;
 
 // ---- credits (Phase 2C-1): lots with an expiry; used first-in-first-out by earliest expiry ----
 const credits = [{ member_id: 'M0002', remaining: 10, expires_at: addDays(todayYmd(), 20), reason: 'owner cancellation' }];
@@ -304,6 +312,7 @@ function run(req) {
       case 'confirmCardSetup': return confirmCardSetup(req, v);
       case 'removeCard': return removeCard(req, v);
       case 'payShare': return payShare(req, v);
+      case 'payOwed': return payOwed(req, v);
       case 'confirmPayment': return confirmPayment(req, v);
       case 'waiverText': return ok(WAIVER_TEXT);
       case 'signWaiver': return signWaiver(req, v);
@@ -586,6 +595,55 @@ function startup(r, v) {
   return ok({ me: me(v).data, resources: visibleResources(v), availability: a.data });
 }
 
+// Amount owed: the Owed shares a member owes, as the engine's `owed` block. Owner and Family never owe.
+function owedBlock(id, forOwner) {
+  const m = memById(id), items = [];
+  if (!m || isPriv(m)) return { amount: 0, items: items };
+  bookings.forEach(function (b) {
+    b.players.forEach(function (p) {
+      if (p.share_status === 'Owed' && p.owed_by === id && p.share_amount > 0) {
+        const it = { booking_id: b.booking_id, resource_name: resById(b.resource_id).name, when: fmtRange(b.start, b.end), amount: p.share_amount };
+        if (forOwner) { it.share_id = p.share_id; it.owed_at = b.end; }
+        items.push(it);
+      }
+    });
+  });
+  return { amount: cents(items.reduce(function (s, x) { return s + x.amount; }, 0)), items: items };
+}
+function owedGate(v) {
+  const o = owedBlock(v.member_id);
+  return o.amount > 0 ? err('AMOUNT_OWED', 'You owe $' + o.amount.toFixed(2) + ' from an earlier booking. Please pay it in the app before booking again.') : null;
+}
+function payOwed(r, v) {
+  const o = owedBlock(v.member_id);
+  if (!(o.amount > 0)) return ok({ paid: false, amount: 0, credit_applied: 0, owed: o });
+  const left = cents(o.amount - Math.min(balanceOf(v.member_id), o.amount));
+  if (left > 0 && !v.card) return err('NO_CARD', 'Add a payment card to pay what you owe.');
+  if (left > 0 && v.declineNext) return err('CARD_DECLINED', 'Your card was declined. Replace your card and try again.');
+  const applied = useCredit(v.member_id, o.amount);
+  bookings.forEach(function (b) {
+    b.players.forEach(function (p) { if (p.share_status === 'Owed' && p.owed_by === v.member_id) p.share_status = 'Paid'; });
+  });
+  return ok({ paid: true, amount: o.amount, credit_applied: applied, owed: owedBlock(v.member_id) });
+}
+function settleOwed(r) {
+  const m = memById(r.member_id);
+  if (!m) return err('NOT_FOUND', 'That member could not be found.');
+  if (r.how !== 'paid' && r.how !== 'waive') return err('BAD_REQUEST', 'how must be paid or waive.');
+  if (r.how === 'waive' && !String(r.note || '').trim()) return err('BAD_REQUEST', 'Please give a reason for waiving.');
+  let n = 0, sum = 0;
+  bookings.forEach(function (b) {
+    b.players.forEach(function (p) {
+      if (p.share_status === 'Owed' && p.owed_by === r.member_id && (!r.share_ids || r.share_ids.indexOf(p.share_id) >= 0)) {
+        p.share_status = r.how === 'paid' ? 'Paid' : 'Waived';
+        n++; sum += p.share_amount;
+      }
+    });
+  });
+  if (!n) return err('BAD_REQUEST', 'That member does not owe anything.');
+  return ok({ member_id: r.member_id, settled: n, amount: cents(sum), how: r.how, owed: null });
+}
+
 function me(v) {
   const t = todayYmd(), ws = mondayOf(t), priv = isPriv(v);
   return ok({
@@ -599,6 +657,7 @@ function me(v) {
     waiver_form_url: 'https://example.com/waiver-demo',
     terms: termsStatus(v),
     card: v.card ? { brand: v.card.brand, last4: v.card.last4, exp: v.card.exp } : null,
+    owed: owedBlock(v.member_id),
     credits: { balance: balanceOf(v.member_id), lots: lotsOf(v.member_id).map(function (c) { return { amount_remaining: c.remaining, expires_at: c.expires_at }; }) },
     payments_enabled: true,
     settings: Object.assign({}, SETTINGS),
@@ -641,6 +700,7 @@ function availability(r, v) {
 
 function createBooking(r, v) {
   if (!termsStatus(v).accepted) return err('TERMS_REQUIRED', 'Please read and accept the Booking and Payment Terms before booking. You can do this from the Account screen.');
+  if (owedGate(v)) return owedGate(v);
   if (needsCard(v, [r])) return cardRequired();
   const res = resById(r.resource_id);
   if (!res || !r.start) return err('BAD_REQUEST', 'Missing or invalid booking details.');
@@ -678,6 +738,7 @@ function cardRequired() {
 function startCardSetup(r, v) {
   if (!termsStatus(v).accepted) return err('TERMS_REQUIRED', 'Please read and accept the Booking and Payment Terms before booking. You can do this from the Account screen.');
   v.card = Object.assign({}, DEMO_CARD);
+  v.declineNext = false; // a replaced card works
   return ok({ url: null, mock_saved: true });
 }
 function confirmCardSetup(r, v) {
@@ -794,6 +855,7 @@ function hrsOf(s) {
 // merge, all-or-nothing conflict check, then price and split per merged booking.
 function createBookings(r, v) {
   if (!termsStatus(v).accepted) return err('TERMS_REQUIRED', 'Please read and accept the Booking and Payment Terms before booking. You can do this from the Account screen.');
+  if (owedGate(v)) return owedGate(v);
   if (needsCard(v, Array.isArray(r.sessions) ? r.sessions : [])) return cardRequired();
   const input = Array.isArray(r.sessions) ? r.sessions : [];
   if (!input.length) return err('BAD_REQUEST', 'Pick at least one time.');
@@ -976,6 +1038,10 @@ function ownerAction(a, r, v) {
         bookings_this_week: bookings.filter(function (b) { const d = b.start.slice(0, 10); return active(b) && d >= ws && d <= we; }).length,
       },
       late_cancellations: lateWaiting().map(function (b) { return detail(b, v, true); }),
+      owed: members.map(function (m) {
+        const o = owedBlock(m.member_id, true);
+        return o.amount > 0 ? { member_id: m.member_id, name: m.first_name + ' ' + m.last_name, email: m.email, amount: o.amount, items: o.items } : null;
+      }).filter(Boolean),
       waivers_awaiting_guardian: waivers.filter(function (w) { return w.status === 'AwaitingGuardian'; }).map(function (w) {
         return { waiver_id: w.waiver_id, member_id: w.member_id, minor_name: w.minor_name, guardian_name: w.guardian_name, guardian_email: w.guardian_email,
           requested_at: w.requested_at, link_expires_at: w.link_expires_at, reminder_sent: w.reminder_sent };
@@ -1038,8 +1104,10 @@ function ownerAction(a, r, v) {
     m.role = r.role;
     return ok({ member: m });
   }
+  if (a === 'ownerSettleOwed') return settleOwed(r);
   if (a === 'ownerMembers') {
-    return ok(members.filter(function (m) { return !r.status || m.status === r.status; }));
+    return ok(members.filter(function (m) { return !r.status || m.status === r.status; })
+      .map(function (m) { return Object.assign({}, m, { amount_owed: owedBlock(m.member_id).amount }); }));
   }
   if (a === 'ownerBlockTime') {
     const res = resById(r.resource_id);
@@ -1149,6 +1217,9 @@ function inviteConfirm(r, t) {
   }
   if (r.choice !== 'accept') return err('BAD_REQUEST', 'Choose Accept or Decline.');
   const m = memById(inv.member_id);
+  const owesM = m.status === 'Invited' ? (r.session ? viewer(r.session) : null) : m;
+  const owes = owesM ? owedBlock(owesM.member_id).amount : 0;
+  if (owes > 0) return err('AMOUNT_OWED', 'Please pay the $' + owes.toFixed(2) + ' you owe first, then accept the invitation.');
   if (m.status === 'Invited') {
     if (r.session) { // "I have an account under a different email": the signed-in member takes the place
       const me = viewer(r.session);

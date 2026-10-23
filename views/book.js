@@ -1,6 +1,6 @@
 import { call, clearCache } from '../api.js';
 import { h, add, icon, clear, parseLocal, todayYmd, addDays, dowName, monthName, dayNum, mondayOf, fmtDay, timeRange, fmtRange, money, isEmail, fullName, termsLink, hashParams, clearHashParams } from '../util.js';
-import { banner, skeleton, field, setBusy, openSheet, startCardFlow } from '../ui.js';
+import { banner, skeleton, field, setBusy, openSheet, startCardFlow, owedCard, owedAmount } from '../ui.js';
 import { waiverOf } from './waiver.js';
 
 const GOLF = 'GOLF';
@@ -58,6 +58,7 @@ export async function renderBook(root, ctx) {
 
   root.append(h('h1', { text: 'Book a court' }));
   const cardNoteSlot = h('div');
+  const owedSlot = h('div');
   const waiverSlot = h('div');
   const usageSlot = h('p', { class: 'usage' });
   const noteSlot = h('p', { class: 'usage updating', role: 'status' });
@@ -69,7 +70,7 @@ export async function renderBook(root, ctx) {
   const hintSlot = h('p', { class: 'hint sel-hint', role: 'status', text: DEFAULT_HINT });
   const gridSlot = h('div');
   const selbar = h('div', { class: 'selbar', role: 'region', 'aria-label': 'Selected times', hidden: true });
-  root.append(cardNoteSlot, waiverSlot, usageSlot, noteSlot, errSlot, controlsSlot, navSlot, pickerSlot, hintSlot, gridSlot, selbar);
+  root.append(owedSlot, cardNoteSlot, waiverSlot, usageSlot, noteSlot, errSlot, controlsSlot, navSlot, pickerSlot, hintSlot, gridSlot, selbar);
   gridSlot.append(skeleton(5));
 
   let resources = state.resources || [];
@@ -97,9 +98,24 @@ export async function renderBook(root, ctx) {
     b.append(h('a', { href: '#/waiver', text: 'Sign now' }));
     waiverSlot.append(b);
   }
+  // Amount owed: the red card with Pay now, and the Book button stays off until it is paid. Owner and Family never owe.
+  const OWED_MESSAGE = 'Pay the amount you owe before booking again.';
+  function owing() { return !priv && owedAmount(me) > 0; }
+  function renderOwed() {
+    clear(owedSlot);
+    const c = priv ? null : owedCard(me, 'book', async function (cardOnly) {
+      clearCache();
+      me = await ctx.loadMe();
+      if (cardOnly) return;
+      renderOwed();
+      renderSelbar();
+    });
+    if (c) owedSlot.append(c);
+  }
   renderUsage();
   renderNote();
   renderWaiverNote();
+  renderOwed();
 
   // Coming back from Stripe card setup: #/book?card=done&cs=... or ?card=cancel
   const rp = hashParams();
@@ -428,12 +444,13 @@ export async function renderBook(root, ctx) {
     selbar.hidden = !show;
     gridSlot.classList.toggle('has-selbar', show);
     if (!show) return;
-    if (barHint) selbar.append(h('p', { class: 'hint selbar-hint', role: 'status', text: barHint }));
+    if (owing()) selbar.append(h('p', { class: 'hint selbar-hint', role: 'status', text: OWED_MESSAGE }));
+    else if (barHint) selbar.append(h('p', { class: 'hint selbar-hint', role: 'status', text: barHint }));
     selbar.append(
       h('div', { class: 'selbar-in' },
         h('span', { class: 'selcount', 'aria-live': 'polite', text: n + ' selected' }),
         h('button', { type: 'button', class: 'btn', text: 'Clear', onclick: function () { picks.clear(); barHint = ''; setHint(''); renderGrid(); renderSelbar(); } }),
-        h('button', { type: 'button', class: 'btn primary', text: 'Book', onclick: function () { openSelected(); } })));
+        h('button', { type: 'button', class: 'btn primary', text: 'Book', disabled: owing(), title: owing() ? OWED_MESSAGE : undefined, onclick: function () { openSelected(); } })));
   }
 
   // ---- opening the booking sheet ----
@@ -443,7 +460,7 @@ export async function renderBook(root, ctx) {
     try { await loadAvail(); prunePicks(); renderPicker(); renderGrid(); renderSelbar(); } catch (e) { /* ignore */ }
   }
   function openSelected() {
-    if (!picks.size) return;
+    if (!picks.size || owing()) return;
     bookingSheet(ctx, resources, resName, Array.from(picks.values()), {
       onChanged: refreshAfterBooking,
       onBooked: function () { picks.clear(); barHint = ''; setHint(''); renderGrid(); renderSelbar(); },
@@ -458,6 +475,7 @@ export async function renderBook(root, ctx) {
     resources = state.resources || resources;
     renderUsage();
     renderWaiverNote();
+    renderOwed();
     const a = state.avail;
     if (a && a.days && a.days.length && !state.refreshFailed) {
       const nd = priv ? a.days.slice(0, 7) : a.days;

@@ -1,6 +1,6 @@
 import { call, clearToken, clearCache } from '../api.js';
 import { h, add, clear, fullName, termsLink, fmtDate, hashParams, clearHashParams, cardLabel, money } from '../util.js';
-import { banner, setBusy, startCardFlow } from '../ui.js';
+import { banner, setBusy, startCardFlow, owedCard } from '../ui.js';
 import { waiverOf, resendGuardian } from './waiver.js';
 
 function platform() {
@@ -127,6 +127,7 @@ function cardBlock(ctx, noteSlot) {
   }
 
   paint();
+  wrap.repaint = paint;
   return wrap;
 }
 
@@ -179,6 +180,15 @@ export async function renderAccount(root, ctx) {
   else if (p === 'android') steps = h('ol', null, h('li', { text: 'Open this page in Chrome.' }), h('li', { text: 'Tap the menu (three dots).' }), h('li', { text: 'Choose Install app or Add to Home screen.' }), h('li', { text: 'Tap Install.' }));
   else steps = h('p', { text: 'On your phone, open this page and use Share → Add to Home Screen (iPhone) or menu → Install app (Android).' });
 
+  // Amount owed (red card, first thing on the screen). Paying reloads the screen; a card replaced after a decline only refreshes the card block.
+  const cardWrap = cardBlock(ctx, noteSlot);
+  const owed = owedCard(me, null, async function (cardOnly) {
+    clearCache();
+    await ctx.loadMe();
+    if (cardOnly) cardWrap.repaint();
+    else ctx.go('#/account');
+  });
+
   const out = h('button', { class: 'btn block', type: 'button', text: 'Sign out' });
   out.addEventListener('click', async function () {
     setBusy(out, true, 'Signing out…');
@@ -189,13 +199,14 @@ export async function renderAccount(root, ctx) {
 
   add(root,
     h('h1', { text: 'Account' }),
+    owed,
     h('section', { class: 'card' },
       h('h2', { text: fullName(m) }),
       h('p', { class: 'hint', text: m.email + (m.is_owner ? ' · Owner' : '') }),
       m.role === 'Family' ? h('p', { class: 'hint', text: 'Family member' }) : null),
     h('section', { class: 'card' }, h('h2', { text: 'Waiver' }), waiver),
     h('section', { class: 'card' }, h('h2', { text: 'Booking and Payment Terms' }), termsBlock(me)),
-    h('section', { class: 'card' }, h('h2', { text: 'Payment card' }), noteSlot, cardBlock(ctx, noteSlot)),
+    h('section', { class: 'card' }, h('h2', { text: 'Payment card' }), noteSlot, cardWrap),
     creditsBlock(me),
     h('section', { class: 'card' }, h('h2', { text: 'Add to Home Screen' }),
       h('p', { class: 'hint', text: 'Open the app like any other app, straight from your home screen.' }), steps),
