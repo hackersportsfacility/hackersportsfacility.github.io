@@ -625,6 +625,8 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
       priceSlot.append(h('p', null, 'Total ', h('span', { class: 'mono', text: money(total) }), ' · ',
         h('strong', { class: 'mono', text: (even ? '' : 'About ') + money(each) + ' each' }), ' for ' + n + (n === 1 ? ' player' : ' players')));
     }
+    const credit = me.credits && Number(me.credits.balance) > 0 ? Number(me.credits.balance) : 0;
+    if (credit > 0) priceSlot.append(h('p', { class: 'hint credit-note', text: 'You have ' + money(credit) + ' in credit, which will be used first.' }));
   }
 
   function refresh() { renderPlayers(); renderKnown(); renderNew(); renderPrice(); }

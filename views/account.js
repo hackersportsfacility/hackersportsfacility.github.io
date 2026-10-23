@@ -1,5 +1,5 @@
 import { call, clearToken, clearCache } from '../api.js';
-import { h, add, clear, fullName, termsLink, fmtDate, hashParams, clearHashParams, cardLabel } from '../util.js';
+import { h, add, clear, fullName, termsLink, fmtDate, hashParams, clearHashParams, cardLabel, money } from '../util.js';
 import { banner, setBusy, startCardFlow } from '../ui.js';
 import { waiverOf, resendGuardian } from './waiver.js';
 
@@ -130,6 +130,22 @@ function cardBlock(ctx, noteSlot) {
   return wrap;
 }
 
+// Facility credit: shown when there is a balance or any unexpired lot.
+function creditsBlock(me) {
+  const c = me.credits;
+  const lots = (c && c.lots) || [];
+  const balance = c ? Number(c.balance) || 0 : 0;
+  if (!(balance > 0) && !lots.length) return null;
+  const ul = h('ul', { class: 'players detail credit-lots' });
+  lots.forEach(function (l) {
+    ul.append(h('li', null, h('span', { class: 'mono', text: money(l.amount_remaining) + ', expires ' + fmtDate(l.expires_at) })));
+  });
+  return h('section', { class: 'card' },
+    h('h2', { text: money(balance) + ' in facility credit' }),
+    lots.length ? ul : null,
+    h('p', { class: 'hint', text: 'Credit is used automatically on your next booking.' }));
+}
+
 export async function renderAccount(root, ctx) {
   // Coming back from Stripe: #/account?card=done&cs=... or ?card=cancel
   const noteSlot = h('div');
@@ -171,7 +187,7 @@ export async function renderAccount(root, ctx) {
     ctx.afterSignOut();
   });
 
-  root.append(
+  add(root,
     h('h1', { text: 'Account' }),
     h('section', { class: 'card' },
       h('h2', { text: fullName(m) }),
@@ -180,6 +196,7 @@ export async function renderAccount(root, ctx) {
     h('section', { class: 'card' }, h('h2', { text: 'Waiver' }), waiver),
     h('section', { class: 'card' }, h('h2', { text: 'Booking and Payment Terms' }), termsBlock(me)),
     h('section', { class: 'card' }, h('h2', { text: 'Payment card' }), noteSlot, cardBlock(ctx, noteSlot)),
+    creditsBlock(me),
     h('section', { class: 'card' }, h('h2', { text: 'Add to Home Screen' }),
       h('p', { class: 'hint', text: 'Open the app like any other app, straight from your home screen.' }), steps),
     errSlot,

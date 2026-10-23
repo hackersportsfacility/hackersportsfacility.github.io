@@ -289,3 +289,17 @@ fieldset.guardian legend { font-weight: 600; padding: 0 6px; }
 .go-details li { margin-bottom: 4px; }
 .done-mark.warn-mark { background: var(--warn, #b45309); }
 .spam-tip { margin-top: 12px; }
+
+/* Phase 2C-1: credits, cancellations, waive fees */
+.credit-lots li { justify-content: flex-start; }
+.credit-used { white-space: nowrap; }
+.confirm textarea { min-height: 76px; resize: vertical; }
+.confirm .field { margin: 8px 0; }
+.opt-group { border: 0; padding: 0; margin: 8px 0; min-width: 0; }
+.opt-group legend { font-weight: 500; font-size: 0.9rem; padding: 0; margin-bottom: 4px; }
+.opt-group .seg { min-height: 44px; }
+.agenda .agenda-actions { margin-top: 4px; }
+.agenda li > .confirm { margin-top: 8px; }
+.late-reason { font-style: italic; overflow-wrap: anywhere; }
+.segs.col { flex-direction: column; }
+.check-row.tight { margin: 0; }

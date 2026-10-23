@@ -76,21 +76,32 @@ export async function renderGo(root, ctx) {
 
   // ---- booking / member approve or reject ----
   function paintDecision(i) {
-    const approve = i.d !== 'reject';
+    // One button per link: label, busy label, fallback message and an optional note, by link kind and d.
+    const V = {
+      approve: ['Approve', 'Approving…', 'Approved.', 'primary'],
+      reject: ['Reject', 'Rejecting…', 'Rejected.', 'danger'],
+      approve_waive: ['Approve and waive fees', 'Approving…', 'Approved with fees waived.', 'primary',
+        'This approves the booking and waives every player’s fee. Anything already paid is returned as a facility credit.'],
+      credit: ['Waive as credit', 'Waiving…', 'Done. The payments were returned as facility credit.', 'primary',
+        'Every payment for this booking is returned to the player as a facility credit, good for 12 months.'],
+      keep: ['Keep the charges', 'Saving…', 'Done. The charges stand.', 'primary',
+        'The charges for this late cancellation stay as they are.'],
+    };
+    const v = V[i.d] || V.approve;
     const errSlot = h('div', { 'aria-live': 'polite' });
-    const btn = h('button', { class: 'btn ' + (approve ? 'primary' : 'danger'), type: 'button', text: approve ? 'Approve' : 'Reject' });
+    const btn = h('button', { class: 'btn ' + v[3], type: 'button', text: v[0] });
     btn.addEventListener('click', async function () {
       clear(errSlot);
-      setBusy(btn, true, approve ? 'Approving…' : 'Rejecting…');
+      setBusy(btn, true, v[1]);
       try {
         const r = await call('linkConfirm', { t: t });
         if (ctx.stale()) return;
-        message('ok', (r && r.message) || (approve ? 'Approved.' : 'Rejected.'));
+        message('ok', (r && r.message) || v[2]);
       } catch (e) { errSlot.append(banner(e)); setBusy(btn, false); }
     });
     clear(content);
     content.append(h('section', { class: 'card' },
-      h('h2', { text: i.summary }), detailList(i.details), errSlot,
+      h('h2', { text: i.summary }), detailList(i.details), v[4] ? h('p', { class: 'hint', text: v[4] }) : null, errSlot,
       h('div', { class: 'btn-row' }, btn)), toApp());
   }
 

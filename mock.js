@@ -1,6 +1,6 @@
 // In-memory fake of the booking engine (docs/phase1-api-contract.md). Demo mode only.
 // Sign in with any email (alex@example.com = member (slot limit 1), priya@example.com = member (slot limit 3), jordan@example.com = family, anything else = owner). Code: 123456.
-import { pad, todayYmd, addDays, nowLocal, mondayOf, parseLocal, dowName, monthName, dayNum, timeRange } from './util.js';
+import { pad, ymdOf, hoursUntil, todayYmd, addDays, nowLocal, mondayOf, parseLocal, dowName, monthName, dayNum, timeRange } from './util.js';
 
 const FACILITY = 'Hacker Sports Facility';
 const SETTINGS = { open_hour: 6, close_hour: 22, block_hours: 2, max_players_per_court: 4, free_cancel_hours: 24 };
@@ -80,8 +80,8 @@ function addBooking(o) {
     players: ids.map(function (id, i) {
       seqS++;
       const sid = 'S' + ('00000' + seqS).slice(-5);
-      if (priv) return { share_id: sid, member_id: id, share_amount: 0, share_status: 'Waived' };
-      return { share_id: sid, member_id: id, share_amount: shares[i] == null ? 0 : shares[i], share_status: shares[i] == null ? '' : 'Pending' };
+      if (priv) return { share_id: sid, member_id: id, share_amount: 0, share_status: 'Waived', credit_applied: 0 };
+      return { share_id: sid, member_id: id, share_amount: shares[i] == null ? 0 : shares[i], share_status: shares[i] == null ? '' : 'Pending', credit_applied: 0 };
     }),
     created_at: o.created_at || now0,
   };
@@ -99,7 +99,7 @@ addBooking({ resource_id: 'BOTH', start: dayAt(2, 14), status: 'Approved', booke
 addBooking({ resource_id: 'COURT2', start: dayAt(5, 16), status: 'Approved', booker: 'M0003', guests: ['M0004'] });
 addBooking({ resource_id: 'COURT1', start: dayAt(-2, 10), status: 'Completed', booker: 'M0002', guests: ['M0001', 'M0004'] });
 addBooking({ resource_id: 'COURT2', start: dayAt(-5, 16), status: 'Completed', booker: 'M0002', guests: ['M0003'] });
-addBooking({ resource_id: 'COURT2', start: dayAt(-3, 8), status: 'Cancelled', booker: 'M0002', guests: [], notes: '' });
+addBooking({ resource_id: 'COURT2', start: dayAt(-3, 8), status: 'Cancelled', booker: 'M0002', guests: ['M0003'], notes: 'LATE_CANCEL' });
 addBooking({ resource_id: 'BOTH', start: dayAt(-4, 18), status: 'Completed', booker: 'M0001', guests: ['M0002', 'M0003', 'M0004'] });
 // Golf Simulator (Owner and Family only)
 addBooking({ resource_id: 'GOLF', start: dayAt(1, 10), status: 'Approved', booker: 'M0001', guests: [], pay_mode: 'BookerPays' });
@@ -118,6 +118,38 @@ setShare(0, 'M0002', 'Unpaid');           // Alex's share on his own Approved bo
 setShare(0, 'M0003', 'Unpaid');
 setShare(5, 'M0003', 'CoveredByBooker');  // Priya's booking: Jamie was covered
 setShare(6, 'M0003', 'Paid');             // Jamie's booking: Priya's share still Pending
+// Late-cancelled booking waiting for the owner's decision (Phase 2C-1): both players had paid.
+setShare(9, 'M0002', 'Paid');
+setShare(9, 'M0003', 'Paid');
+bookings[9].cancelled_at = dayAt(-3, 7);
+bookings[9].late_reason = 'My son came down with the flu and we could not make it.';
+bookings[9].late_decision = '';
+
+// ---- credits (Phase 2C-1): lots with an expiry; used first-in-first-out by earliest expiry ----
+const credits = [{ member_id: 'M0002', remaining: 10, expires_at: addDays(todayYmd(), 20), reason: 'owner cancellation' }];
+const cents = function (x) { return Math.round((Number(x) || 0) * 100) / 100; };
+function lotsOf(id) {
+  const t = todayYmd();
+  return credits.filter(function (c) { return c.member_id === id && c.remaining > 0 && c.expires_at >= t; })
+    .sort(function (a, b) { return a.expires_at < b.expires_at ? -1 : a.expires_at > b.expires_at ? 1 : 0; });
+}
+function balanceOf(id) { return cents(lotsOf(id).reduce(function (s, c) { return s + c.remaining; }, 0)); }
+function addCredit(id, amount, reason) {
+  const d = new Date();
+  d.setFullYear(d.getFullYear() + 1);
+  credits.push({ member_id: id, remaining: cents(amount), expires_at: ymdOf(d), reason: reason });
+}
+function useCredit(id, amount) {
+  let left = cents(amount), used = 0;
+  lotsOf(id).forEach(function (c) {
+    if (left <= 0) return;
+    const take = Math.min(c.remaining, left);
+    c.remaining = cents(c.remaining - take);
+    left = cents(left - take);
+    used = cents(used + take);
+  });
+  return used;
+}
 
 // ---- helpers ----
 function err(code, message) { return { ok: false, error: { code: code, message: message } }; }
@@ -157,7 +189,7 @@ function detail(b, v, withContact) {
     booker: { first_name: bk.first_name, last_name: bk.last_name },
     players: b.players.map(function (p) {
       const m = memById(p.member_id);
-      const o = { member_id: m.member_id, first_name: m.first_name, last_name: m.last_name, status: m.status, share_amount: p.share_amount, share_status: p.share_status };
+      const o = { member_id: m.member_id, first_name: m.first_name, last_name: m.last_name, status: m.status, share_amount: p.share_amount, share_status: p.share_status, credit_applied: p.credit_applied || 0 };
       if (v && p.member_id === v.member_id) { // only the viewer's own share exposes its id
         o.share_id = p.share_id;
         o.can_pay = (p.share_status === 'Pending' || p.share_status === 'Unpaid') && p.share_amount > 0 && active(b);
@@ -167,6 +199,7 @@ function detail(b, v, withContact) {
     late_cancel: /LATE_CANCEL/.test(b.notes),
     can_cancel: active(b) && b.start > nowLocal() && !!v && (b.booker === v.member_id || !!owner),
   };
+  if (owner) { out.late_reason = b.late_reason || ''; out.cancelled_at = b.cancelled_at || ''; }
   if (withContact) { out.booker.email = bk.email; out.booker.phone = bk.phone; out.booker_email = bk.email; out.booker_phone = bk.phone; }
   return out;
 }
@@ -254,7 +287,10 @@ function run(req) {
 // Booking and member links act on the first Pending booking / member in the demo data; guardian links only track a flag.
 export const DEMO_LINKS = [
   ['demo-booking-approve', 'Booking request: approve'],
+  ['demo-booking-approve_waive', 'Booking request: approve and waive fees'],
   ['demo-booking-reject', 'Booking request: reject'],
+  ['demo-latecancel-credit', 'Late cancellation: waive as credit'],
+  ['demo-latecancel-keep', 'Late cancellation: keep the charges'],
   ['demo-member-approve', 'New member: approve'],
   ['demo-member-reject', 'New member: reject'],
   ['demo-guardian-sign', 'Parent or guardian: sign'],
@@ -263,7 +299,7 @@ export const DEMO_LINKS = [
 ];
 const linkDone = {};
 function linkParts(t) {
-  const m = /^demo-(booking|member|guardian)-(approve|reject|sign)$/.exec(String(t || ''));
+  const m = /^demo-(booking|member|guardian|latecancel)-(approve_waive|approve|reject|sign|credit|keep)$/.exec(String(t || ''));
   return m ? { kind: m[1], d: m[2] } : null;
 }
 function linkInfo(r) {
@@ -279,11 +315,22 @@ function linkInfo(r) {
     const day = b.start.slice(0, 10);
     return ok(Object.assign(base, {
       state: 'ready',
-      summary: (p.d === 'reject' ? 'Reject ' : 'Approve ') + resById(b.resource_id).name + ', ' + dowName(day) + ' ' + monthName(day) + ' ' + dayNum(day) + ', ' + timeRange(b.start, b.end, true) + ' for ' + bk.first_name + ' ' + bk.last_name + '?',
+      summary: (p.d === 'reject' ? 'Reject ' : p.d === 'approve_waive' ? 'Approve and waive fees for ' : 'Approve ') + resById(b.resource_id).name + ', ' + dowName(day) + ' ' + monthName(day) + ' ' + dayNum(day) + ', ' + timeRange(b.start, b.end, true) + ' for ' + bk.first_name + ' ' + bk.last_name + '?',
       details: [
         { label: 'Players', value: b.players.map(function (x) { const m = memById(x.member_id); return m.first_name + ' ' + m.last_name; }).join(', ') },
         { label: 'Price', value: '$' + b.total_amount.toFixed(2) },
       ],
+    }));
+  }
+  if (p.kind === 'latecancel') {
+    const b = lateWaiting()[0];
+    if (linkDone[t] || !b) return ok(Object.assign(base, { state: 'already', summary: 'This late cancellation was already decided. Nothing more is needed.', details: [] }));
+    const bk = memById(b.booker), day = b.start.slice(0, 10);
+    const paid = b.players.filter(paidShare).reduce(function (s, x) { return s + x.share_amount; }, 0);
+    return ok(Object.assign(base, {
+      state: 'ready',
+      summary: (p.d === 'credit' ? 'Waive as credit: ' : 'Keep the charges: ') + resById(b.resource_id).name + ', ' + dowName(day) + ' ' + monthName(day) + ' ' + dayNum(day) + ', ' + timeRange(b.start, b.end, true) + ', cancelled by ' + bk.first_name + ' ' + bk.last_name + '?',
+      details: [{ label: 'Reason', value: b.late_reason || 'None given' }, { label: 'Charges standing', value: '$' + paid.toFixed(2) }],
     }));
   }
   if (p.kind === 'member') {
@@ -312,11 +359,18 @@ function linkConfirm(r) {
     return ok({ ok: true, message: "Thank you. The agreement is signed and Riley's waiver is on file.", final: true });
   }
   linkDone[t] = true;
-  const approve = info.d === 'approve';
+  const approve = info.d === 'approve' || info.d === 'approve_waive';
+  if (info.kind === 'latecancel') {
+    const lb = lateWaiting()[0];
+    const e = decideLate(lb, info.d);
+    if (e) return e;
+    return ok({ ok: true, message: info.d === 'credit' ? 'Done. The payments were returned to the players as facility credit.' : 'Done. The charges stand.', final: true });
+  }
   if (info.kind === 'booking') {
     const b = bookings.filter(function (x) { return x.status === 'Pending'; })[0];
     b.status = approve ? 'Approved' : 'Rejected';
-    return ok({ ok: true, message: approve ? 'Approved. The booker has been emailed.' : 'Rejected. The booker has been emailed.', final: true });
+    if (info.d === 'approve_waive') waiveShares(b, null, 'credit');
+    return ok({ ok: true, message: info.d === 'approve_waive' ? 'Approved with fees waived. The booker has been emailed.' : approve ? 'Approved. The booker has been emailed.' : 'Rejected. The booker has been emailed.', final: true });
   }
   const m = members.filter(function (x) { return x.status === 'Pending'; })[0];
   m.status = approve ? 'Active' : 'Rejected';
@@ -503,6 +557,7 @@ function me(v) {
     waiver_form_url: 'https://example.com/waiver-demo',
     terms: termsStatus(v),
     card: v.card ? { brand: v.card.brand, last4: v.card.last4, exp: v.card.exp } : null,
+    credits: { balance: balanceOf(v.member_id), lots: lotsOf(v.member_id).map(function (c) { return { amount_remaining: c.remaining, expires_at: c.expires_at }; }) },
     payments_enabled: true,
     settings: Object.assign({}, SETTINGS),
   });
@@ -605,9 +660,12 @@ function payShare(r, v) {
   const f = shareOf(r.share_id, v);
   if (!f) return err('NOT_FOUND', 'We could not find that payment.');
   if (!(f.p.share_status === 'Pending' || f.p.share_status === 'Unpaid') || !(f.p.share_amount > 0) || !active(f.b)) return err('BAD_REQUEST', "That payment can't be made right now.");
+  const applied = useCredit(v.member_id, f.p.share_amount);
+  f.p.credit_applied = cents((f.p.credit_applied || 0) + applied);
   f.p.share_status = 'Paid';
-  if (v.card) return ok({ paid: true, share: { share_id: f.p.share_id, share_status: 'Paid' } });
-  return ok({ url: null, mock_paid: true, paid: true });
+  const out = { paid: true, credit_applied: applied, charged: cents(f.p.share_amount - applied), share: { share_id: f.p.share_id, share_status: 'Paid', credit_applied: f.p.credit_applied } };
+  if (v.card || out.charged === 0) return ok(out);
+  return ok(Object.assign(out, { url: null, mock_paid: true }));
 }
 function confirmPayment(r, v) {
   if (!r.cs) return err('BAD_REQUEST', 'Missing payment session.');
@@ -747,16 +805,72 @@ function myBookings(r, v) {
   return ok({ bookings: list.map(function (b) { return detail(b, v); }) });
 }
 
+// Money back on a paid share: to the card (Refunded; any credit it used goes back as credit) or as credit (Credited).
+function returnShare(b, p, how) {
+  const payer = p.share_status === 'CoveredByBooker' ? b.booker : p.member_id;
+  if (how === 'credit') {
+    p.share_status = 'Credited';
+    addCredit(payer, p.share_amount, 'owner cancellation');
+  } else {
+    p.share_status = 'Refunded';
+    if (p.credit_applied > 0) addCredit(payer, p.credit_applied, 'owner cancellation');
+  }
+}
+const paidShare = function (p) { return p.share_status === 'Paid' || p.share_status === 'CoveredByBooker'; };
+const openShare = function (p) { return p.share_status === 'Pending' || p.share_status === 'Unpaid'; };
+
 function cancelBooking(r, v) {
   const b = bookings.filter(function (x) { return x.booking_id === r.booking_id; })[0];
   if (!b) return err('NOT_FOUND', 'We could not find that booking.');
   if (b.booker !== v.member_id && v.role !== 'Owner') return err('FORBIDDEN', 'Only the person who booked can cancel.');
   if (b.start <= nowLocal() || !active(b)) return err('FORBIDDEN', 'This booking can no longer be cancelled.');
+  const hrs = hoursUntil(b.start);
+  const wasPending = b.status === 'Pending';
   b.status = 'Cancelled';
   b.cancelled_at = nowLocal();
-  const hrs = (function () { const p = parseLocal(b.start); return (new Date(p.y, p.mo - 1, p.d, p.h, p.mi).getTime() - Date.now()) / 3600000; })();
-  if (hrs < SETTINGS.free_cancel_hours && v.role !== 'Owner') b.notes += ' LATE_CANCEL';
+  if (v.role === 'Owner') {
+    // D: owner cancels. Unpaid and pending shares are cancelled; paid ones come back as the owner chose. No strikes.
+    const how = r.paid_as === 'credit' ? 'credit' : 'refund';
+    b.players.forEach(function (p) {
+      if (paidShare(p)) returnShare(b, p, how);
+      else if (openShare(p)) p.share_status = 'Cancelled';
+    });
+  } else if (wasPending || hrs > SETTINGS.free_cancel_hours) {
+    // A / B: free. Anything paid early with Pay now is refunded.
+    b.players.forEach(function (p) {
+      if (p.share_status === 'Paid') returnShare(b, p, 'refund');
+      else if (openShare(p) || p.share_status === 'CoveredByBooker') p.share_status = 'Cancelled';
+    });
+  } else {
+    // C: late cancellation. Paid stays paid; everyone who had not paid is charged to the booker.
+    b.players.forEach(function (p) { if (openShare(p) && p.share_amount > 0) p.share_status = 'CoveredByBooker'; });
+    b.notes += ' LATE_CANCEL';
+    b.late_decision = '';
+    b.late_reason = String(r.reason || '').trim().slice(0, 300);
+  }
   return ok({ booking: detail(b, v) });
+}
+
+// Waive fees (owner): open shares are waived, paid ones go back as credit (default) or to the card. No strikes.
+function waiveShares(b, memberIds, how) {
+  b.players.forEach(function (p) {
+    if (memberIds && memberIds.indexOf(p.member_id) === -1) return;
+    if (openShare(p)) p.share_status = 'Waived';
+    else if (paidShare(p)) returnShare(b, p, how);
+  });
+}
+
+function decideLate(b, decision) {
+  if (decision !== 'credit' && decision !== 'keep') return err('BAD_REQUEST', 'Decision must be credit or keep.');
+  if (b.status !== 'Cancelled' || !/LATE_CANCEL/.test(b.notes)) return err('BAD_REQUEST', 'That is not a late cancellation.');
+  if (b.late_decision) return err('BAD_REQUEST', 'That late cancellation has already been decided.');
+  if (decision === 'credit') b.players.forEach(function (p) { if (paidShare(p)) returnShare(b, p, 'credit'); });
+  b.late_decision = decision;
+  return null;
+}
+function lateWaiting() {
+  const since = addDays(todayYmd(), -14);
+  return bookings.filter(function (b) { return b.status === 'Cancelled' && /LATE_CANCEL/.test(b.notes) && !b.late_decision && b.cancelled_at.slice(0, 10) >= since; });
 }
 
 function knownPlayers(v) {
@@ -786,6 +900,7 @@ function ownerAction(a, r, v) {
         active_members: members.filter(function (m) { return m.status === 'Active'; }).length,
         bookings_this_week: bookings.filter(function (b) { const d = b.start.slice(0, 10); return active(b) && d >= ws && d <= we; }).length,
       },
+      late_cancellations: lateWaiting().map(function (b) { return detail(b, v, true); }),
       waivers_awaiting_guardian: waivers.filter(function (w) { return w.status === 'AwaitingGuardian'; }).map(function (w) {
         return { waiver_id: w.waiver_id, member_id: w.member_id, minor_name: w.minor_name, guardian_name: w.guardian_name, guardian_email: w.guardian_email,
           requested_at: w.requested_at, link_expires_at: w.link_expires_at, reminder_sent: w.reminder_sent };
@@ -796,9 +911,26 @@ function ownerAction(a, r, v) {
   if (a === 'ownerDecideBooking') {
     const b = bookings.filter(function (x) { return x.booking_id === r.booking_id; })[0];
     if (!b) return err('NOT_FOUND', 'We could not find that booking.');
-    if (r.decision !== 'approve' && r.decision !== 'reject') return err('BAD_REQUEST', 'Decision must be approve or reject.');
+    if (['approve', 'approve_waive', 'reject'].indexOf(r.decision) === -1) return err('BAD_REQUEST', 'Decision must be approve, approve_waive or reject.');
     if (b.status !== 'Pending') return err('BAD_REQUEST', 'That booking has already been decided.');
-    b.status = r.decision === 'approve' ? 'Approved' : 'Rejected';
+    b.status = r.decision === 'reject' ? 'Rejected' : 'Approved';
+    if (r.decision === 'approve_waive') waiveShares(b, null, 'credit');
+    return ok({ booking: detail(b, v, true) });
+  }
+  if (a === 'ownerWaiveFees') {
+    const b = bookings.filter(function (x) { return x.booking_id === r.booking_id; })[0];
+    if (!b) return err('NOT_FOUND', 'We could not find that booking.');
+    if (!String(r.reason || '').trim()) return err('BAD_REQUEST', 'Please give a reason for waiving the fees.');
+    if (r.paid_as && r.paid_as !== 'credit' && r.paid_as !== 'refund') return err('BAD_REQUEST', 'paid_as must be credit or refund.');
+    if (!active(b)) return err('BAD_REQUEST', 'Fees can only be waived on a pending or approved booking.');
+    waiveShares(b, Array.isArray(r.member_ids) && r.member_ids.length ? r.member_ids : null, r.paid_as === 'refund' ? 'refund' : 'credit');
+    return ok({ booking: detail(b, v, true) });
+  }
+  if (a === 'ownerDecideLateCancel') {
+    const b = bookings.filter(function (x) { return x.booking_id === r.booking_id; })[0];
+    if (!b) return err('NOT_FOUND', 'We could not find that booking.');
+    const e = decideLate(b, r.decision);
+    if (e) return e;
     return ok({ booking: detail(b, v, true) });
   }
   if (a === 'ownerDecideMember') {

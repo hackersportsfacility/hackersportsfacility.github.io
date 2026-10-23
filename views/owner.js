@@ -1,6 +1,6 @@
 import { call, isMock } from '../api.js';
-import { h, clear, fmtRange, fmtDay, fmtDate, timeRange, money, fullName, parseLocal } from '../util.js';
-import { banner, skeleton, pill, rolePill, field, setBusy } from '../ui.js';
+import { h, add, clear, fmtRange, fmtDay, fmtDate, timeRange, money, fullName, parseLocal } from '../util.js';
+import { banner, skeleton, pill, rolePill, sharePill, field, setBusy } from '../ui.js';
 
 function hoursLabel(start, end) {
   const a = parseLocal(start), b = parseLocal(end);
@@ -32,7 +32,7 @@ export async function renderOwner(root, ctx) {
     }
     if (ctx.stale()) return;
     clear(dashSlot);
-    dashSlot.append(stats(d), pendingBookings(d), pendingMembers(d), awaitingGuardian(d), upcoming(d));
+    add(dashSlot, stats(d), pendingBookings(d), lateCancellations(d), pendingMembers(d), awaitingGuardian(d), upcoming(d));
   }
 
   function stats(d) {
@@ -46,29 +46,33 @@ export async function renderOwner(root, ctx) {
     const wrap = h('div');
     const errSlot = h('div');
     const approve = h('button', { class: 'btn primary', type: 'button', text: 'Approve' });
+    const waive = opts.waive ? h('button', { class: 'btn', type: 'button', text: 'Approve and waive fees' }) : null;
     const reject = h('button', { class: 'btn danger-ghost', type: 'button', text: 'Reject' });
-    const row = h('div', { class: 'btn-row' }, approve, reject);
+    const row = h('div', { class: 'btn-row' });
+    const showRow = function () { clear(row); add(row, approve, waive, reject); };
+    showRow();
     wrap.append(errSlot, row);
 
     async function send(decision, reason, btn, label) {
       clear(errSlot);
       setBusy(btn, true, label);
-      approve.disabled = true; reject.disabled = true;
+      approve.disabled = true; reject.disabled = true; if (waive) waive.disabled = true;
       try {
         await opts.send(decision, reason);
         await loadDash();
       } catch (e) {
         errSlot.append(banner(e));
         setBusy(btn, false);
-        approve.disabled = false; reject.disabled = false;
+        approve.disabled = false; reject.disabled = false; if (waive) waive.disabled = false;
       }
     }
     approve.addEventListener('click', function () { send('approve', '', approve, 'Approving…'); });
+    if (waive) waive.addEventListener('click', function () { send('approve_waive', '', waive, 'Approving…'); });
     reject.addEventListener('click', function () {
       clear(row);
       const input = h('input', { type: 'text', maxlength: '200', autocomplete: 'off' });
       const go = h('button', { class: 'btn danger', type: 'button', text: 'Confirm reject' });
-      const back = h('button', { class: 'btn', type: 'button', text: 'Back', onclick: function () { clear(row); row.append(approve, reject); } });
+      const back = h('button', { class: 'btn', type: 'button', text: 'Back', onclick: showRow });
       go.addEventListener('click', function () { send('reject', input.value.trim(), go, 'Rejecting…'); });
       row.append(field(opts.reasonLabel, input), h('div', { class: 'btn-row' }, go, back));
       input.focus();
@@ -91,6 +95,7 @@ export async function renderOwner(root, ctx) {
             h('span', { class: 'mono share', text: p.share_status === 'Waived' ? 'Waived' : money(p.share_amount) }));
         })),
         decisionRow({
+          waive: true,
           reasonLabel: 'Reason (optional)',
           send: function (decision, reason) { return call('ownerDecideBooking', { booking_id: b.booking_id, decision: decision, reason: reason || undefined }); },
         })));
@@ -128,16 +133,145 @@ export async function renderOwner(root, ctx) {
     return sec;
   }
 
+  // Radio group helper: returns { el, value() }.
+  let radioN = 0;
+  function radios(legend, opts, def) {
+    const name = 'rg' + (++radioN);
+    const inputs = opts.map(function (o) { return h('input', { type: 'radio', name: name, value: o[0], checked: o[0] === def }); });
+    const el = h('fieldset', { class: 'opt-group' }, h('legend', { text: legend }),
+      h('div', { class: 'segs col' }, opts.map(function (o, i) { return h('label', { class: 'seg' }, inputs[i], h('span', { text: o[1] })); })));
+    return { el: el, value: function () { const c = inputs.filter(function (x) { return x.checked; })[0]; return c ? c.value : def; } };
+  }
+  const returnable = function (p) { return p.share_status === 'Paid' || p.share_status === 'CoveredByBooker'; };
+
+  function waivePanel(b, close, done) {
+    const errSlot = h('div', { 'aria-live': 'polite' });
+    const checks = b.players.map(function (p) {
+      const cb = h('input', { type: 'checkbox', checked: true });
+      cb.addEventListener('change', sync);
+      return { p: p, cb: cb };
+    });
+    const reason = h('input', { type: 'text', maxlength: '200', autocomplete: 'off' });
+    const paidAs = radios('Return paid amounts as', [['credit', 'Credit (recommended)'], ['refund', 'Refund to card']], 'credit');
+    const paidSlot = h('div');
+    const go = h('button', { class: 'btn primary', type: 'button', text: 'Waive fees' });
+    function sync() {
+      clear(paidSlot);
+      if (checks.some(function (c) { return c.cb.checked && returnable(c.p); })) paidSlot.append(paidAs.el);
+    }
+    go.addEventListener('click', async function () {
+      clear(errSlot);
+      const chosen = checks.filter(function (c) { return c.cb.checked; });
+      if (!chosen.length) { errSlot.append(banner('Pick at least one player.')); return; }
+      if (!reason.value.trim()) { errSlot.append(banner('Please type a reason.')); reason.focus(); return; }
+      setBusy(go, true, 'Waiving…');
+      const req = { booking_id: b.booking_id, reason: reason.value.trim() };
+      if (chosen.length !== checks.length) req.member_ids = chosen.map(function (c) { return c.p.member_id; });
+      if (paidSlot.firstChild) req.paid_as = paidAs.value();
+      try {
+        await call('ownerWaiveFees', req);
+        done('Fees waived.');
+      } catch (e) { errSlot.append(banner(e)); setBusy(go, false); }
+    });
+    const list = h('ul', { class: 'players detail' }, checks.map(function (c) {
+      return h('li', null,
+        h('label', { class: 'check-row tight' }, c.cb, h('span', { text: fullName(c.p) })),
+        h('span', { class: 'share-cell' }, c.p.share_amount > 0 ? h('span', { class: 'mono share', text: money(c.p.share_amount) }) : null, sharePill(c.p.share_status)));
+    }));
+    sync();
+    return h('div', { class: 'confirm', role: 'dialog', 'aria-label': 'Waive fees' },
+      h('p', null, h('strong', { text: 'Waive fees' }), ' for ' + b.resource_name + ', ' + fmtRange(b.start, b.end)),
+      list, paidSlot, field('Reason (required)', reason), errSlot,
+      h('div', { class: 'btn-row' }, go, h('button', { class: 'btn', type: 'button', text: 'Back', onclick: close })));
+  }
+
+  function cancelPanel(b, close, done) {
+    const errSlot = h('div', { 'aria-live': 'polite' });
+    const paidAs = radios('Return paid amounts as', [['refund', 'Refund to card'], ['credit', 'Credit']], 'refund');
+    const yes = h('button', { class: 'btn danger', type: 'button', text: 'Cancel booking' });
+    const anyPaid = b.players.some(returnable);
+    yes.addEventListener('click', async function () {
+      clear(errSlot);
+      setBusy(yes, true, 'Cancelling…');
+      try {
+        await call('cancelBooking', anyPaid ? { booking_id: b.booking_id, paid_as: paidAs.value() } : { booking_id: b.booking_id });
+        done('Booking cancelled.');
+      } catch (e) { errSlot.append(banner(e)); setBusy(yes, false); }
+    });
+    return h('div', { class: 'confirm', role: 'alertdialog', 'aria-label': 'Confirm cancel booking' },
+      h('p', { text: 'Cancel ' + b.resource_name + ', ' + fmtRange(b.start, b.end) + ' for ' + fullName(b.booker) + '?' }),
+      h('p', { class: 'hint', text: 'Anyone who has not paid is not charged. No strikes. The players are emailed.' }),
+      anyPaid ? paidAs.el : null, errSlot,
+      h('div', { class: 'btn-row' }, yes, h('button', { class: 'btn', type: 'button', text: 'Keep booking', onclick: close })));
+  }
+
   function upcoming(d) {
     const sec = h('section', null, h('h2', { text: 'Next 7 days' }));
     if (!d.upcoming.length) { sec.append(h('p', { class: 'empty', text: 'Nothing booked in the next 7 days.' })); return sec; }
     const ul = h('ul', { class: 'agenda' });
     d.upcoming.forEach(function (b) {
-      ul.append(h('li', null,
+      const panelSlot = h('div');
+      const actions = h('div', { class: 'btn-row agenda-actions' });
+      const li = h('li', null,
         h('span', { class: 'mono', text: fmtDay(b.start) + ' · ' + timeRange(b.start, b.end, true) }),
-        h('span', { text: b.resource_name + ' · ' + fullName(b.booker) })));
+        h('span', { text: b.resource_name + ' · ' + fullName(b.booker) }),
+        panelSlot, actions);
+      const showActions = function () {
+        clear(panelSlot); clear(actions);
+        if (b.status !== 'Approved') return;
+        actions.append(
+          h('button', { class: 'btn', type: 'button', text: 'Waive fees', 'aria-label': 'Waive fees for ' + b.resource_name + ' ' + fmtDay(b.start), onclick: function () { open(waivePanel); } }),
+          h('button', { class: 'btn danger-ghost', type: 'button', text: 'Cancel booking', 'aria-label': 'Cancel ' + b.resource_name + ' ' + fmtDay(b.start), onclick: function () { open(cancelPanel); } }));
+      };
+      function open(make) {
+        clear(panelSlot); clear(actions);
+        const p = make(b, showActions, function (msg) {
+          clear(panelSlot);
+          panelSlot.append(banner(msg, 'info'));
+          loadDash();
+        });
+        panelSlot.append(p);
+        const first = p.querySelector('input[type=text],button');
+        if (first) first.focus();
+      }
+      showActions();
+      ul.append(li);
     });
     sec.append(ul);
+    return sec;
+  }
+
+  // Late cancellations from the last 14 days that the owner has not decided yet.
+  function lateCancellations(d) {
+    const list = d.late_cancellations || [];
+    if (!list.length) return null;
+    const sec = h('section', null, h('h2', { text: 'Late cancellations (' + list.length + ')' }));
+    list.forEach(function (b) {
+      const errSlot = h('div', { 'aria-live': 'polite' });
+      const paid = b.players.filter(returnable).reduce(function (s, p) { return s + (Number(p.share_amount) || 0); }, 0);
+      const credit = h('button', { class: 'btn primary', type: 'button', text: 'Waive as credit' });
+      const keep = h('button', { class: 'btn', type: 'button', text: 'Keep charges' });
+      async function decide(decision, btn, label) {
+        clear(errSlot);
+        setBusy(btn, true, label);
+        credit.disabled = true; keep.disabled = true;
+        try {
+          await call('ownerDecideLateCancel', { booking_id: b.booking_id, decision: decision });
+          await loadDash();
+        } catch (e) {
+          errSlot.append(banner(e));
+          setBusy(btn, false);
+          credit.disabled = false; keep.disabled = false;
+        }
+      }
+      credit.addEventListener('click', function () { decide('credit', credit, 'Waiving…'); });
+      keep.addEventListener('click', function () { decide('keep', keep, 'Saving…'); });
+      sec.append(h('article', { class: 'card booking' },
+        h('div', { class: 'bk-head' }, h('div', null, h('h3', { text: b.resource_name }), h('p', { class: 'mono', text: fmtRange(b.start, b.end) })), pill('Cancelled')),
+        h('p', null, h('strong', { text: fullName(b.booker) }), ' cancelled' + (b.cancelled_at ? ' on ' + fmtDate(b.cancelled_at) : '') + '.' + (paid > 0 ? ' Charges standing: ' + money(paid) + '.' : '')),
+        b.late_reason ? h('p', { class: 'late-reason', text: '“' + b.late_reason + '”' }) : h('p', { class: 'hint', text: 'No reason given.' }),
+        errSlot, h('div', { class: 'btn-row' }, credit, keep)));
+    });
     return sec;
   }
 

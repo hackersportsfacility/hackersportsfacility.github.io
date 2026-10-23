@@ -37,6 +37,7 @@ export function rolePill(role) {
 const SHARE_PILL = {
   Paid: ['ok', 'Paid'], Pending: ['warn', 'Pending'], Unpaid: ['danger', 'Unpaid'],
   CoveredByBooker: ['muted', 'Covered by booker'], Waived: ['muted', 'Waived'],
+  Cancelled: ['muted', 'Cancelled'], Refunded: ['court', 'Refunded'], Credited: ['ok', 'Credited'],
 };
 export function sharePill(status) {
   const d = SHARE_PILL[status];
