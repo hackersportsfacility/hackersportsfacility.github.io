@@ -236,7 +236,7 @@ function detail(b, v, withContact) {
       if (isBooker && inv) { o.invite_id = inv.invite_id; o.share_id = p.share_id; }
       if (v && p.member_id === v.member_id) { // only the viewer's own share exposes its id
         o.share_id = p.share_id;
-        o.can_pay = (p.share_status === 'Pending' || p.share_status === 'Unpaid') && p.share_amount > 0 && active(b) && isAccepted(p);
+        o.can_pay = p.share_status === 'Unpaid' && p.share_amount > 0 && b.status === 'Approved' && isAccepted(p); // only after a failed automatic charge
       }
       return o;
     }),

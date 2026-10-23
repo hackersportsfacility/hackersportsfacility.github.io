@@ -1,7 +1,7 @@
 // Stale-while-revalidate service worker for the app shell only.
 // Shell files are answered from the cache at once (fast start, works offline) and refreshed in the
 // background, so a new release shows up on the next launch. API calls (cross-origin POST) are never touched.
-const CACHE = 'hsf-shell-v13';
+const CACHE = 'hsf-shell-v14';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'api.js', 'config.js', 'mock.js', 'ui.js', 'util.js',
   'views/signin.js', 'views/book.js', 'views/bookings.js', 'views/owner.js', 'views/account.js', 'views/waiver.js', 'views/go.js',
