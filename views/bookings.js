@@ -90,6 +90,9 @@ export async function renderBookings(root, ctx) {
         pay.addEventListener('click', function () { payNow(pay, own); });
         actions.append(pay);
       }
+      if (bk.can_release) {
+        actions.append(h('button', { class: 'btn danger-ghost', type: 'button', text: 'Release remaining time', onclick: function () { confirmRelease(bk); } }));
+      }
       if (bk.can_cancel) {
         actions.append(h('button', { class: 'btn danger-ghost', type: 'button', text: 'Cancel booking', onclick: function () { confirmCancel(bk); } }));
       }
@@ -151,6 +154,32 @@ export async function renderBookings(root, ctx) {
           if (ctx.stale()) return;
           if (out && out.booking) { paint(out.booking); errSlot.append(banner('Removed.', 'info')); }
           else await load();
+        } catch (e) {
+          clear(errSlot);
+          errSlot.append(banner(e));
+          setBusy(yes, false);
+        }
+      });
+      actions.append(panel);
+      yes.focus();
+    }
+
+    // A booking in progress: the current 2-hour block stays, later blocks open up for others. No money changes.
+    function confirmRelease(bk) {
+      clear(actions);
+      clear(errSlot);
+      const yes = h('button', { class: 'btn danger', type: 'button', text: 'Yes, release it' });
+      const panel = h('div', { class: 'confirm', role: 'alertdialog', 'aria-label': 'Confirm release' },
+        h('p', { text: 'Release the rest of this booking? The time slot you are in now stays yours; every later slot opens up for other members.' }),
+        h('p', { class: 'hint', text: 'Nothing is refunded or charged.' }),
+        h('div', { class: 'btn-row' }, yes, h('button', { class: 'btn', type: 'button', text: 'Keep booking', onclick: function () { paint(bk); } })));
+      yes.addEventListener('click', async function () {
+        setBusy(yes, true, 'Releasing…');
+        try {
+          const out = await call('releaseRemaining', { booking_id: bk.booking_id });
+          if (ctx.stale()) return;
+          paint(out.booking);
+          errSlot.append(banner('Released. The later time slots are open for others now.', 'info'));
         } catch (e) {
           clear(errSlot);
           errSlot.append(banner(e));
