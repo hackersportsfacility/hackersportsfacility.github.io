@@ -1,7 +1,7 @@
 // Public route #/go?t=TOKEN: the page every approval / guardian-signing email links to (Release 2.2).
 // Works signed in or out. The token is the credential; linkInfo only reads, linkConfirm acts.
-import { call } from '../api.js';
-import { h, clear, icon, hashParams } from '../util.js';
+import { call, getToken } from '../api.js';
+import { h, clear, icon, hashParams, money, fullName } from '../util.js';
 import { banner, field, setBusy } from '../ui.js';
 import { agreementEl, onReachEnd } from './waiver.js';
 
@@ -150,6 +150,105 @@ export async function renderGo(root, ctx) {
     });
   }
 
+  // ---- a booker's invitation to play: Accept / Decline (Phase 2C-2) ----
+  function paintInvite(i) {
+    const inv = i.invite || {};
+    const booker = inv.booker_name || 'Someone';
+    const me = ctx.state.member;
+    const items = inv.items || [];
+    const errSlot = h('div', { 'aria-live': 'polite' });
+    const acceptBtn = h('button', { class: 'btn primary', type: 'button', text: me && inv.needs_signup ? 'Accept as ' + fullName(me).trim() : 'Accept' });
+    const declineBtn = h('button', { class: 'btn', type: 'button', text: 'Decline' });
+    const formSlot = h('div');
+    const btnRow = h('div', { class: 'btn-row' }, acceptBtn, declineBtn);
+
+    async function send(btn, label, params, doneText) {
+      clear(errSlot);
+      acceptBtn.disabled = true; declineBtn.disabled = true;
+      setBusy(btn, true, label);
+      try {
+        const r = await call('linkConfirm', Object.assign({ t: t }, params));
+        if (ctx.stale()) return;
+        window.scrollTo(0, 0);
+        message('ok', doneText || (r && r.message));
+      } catch (e) {
+        errSlot.append(banner(e));
+        setBusy(btn, false);
+        acceptBtn.disabled = false; declineBtn.disabled = false;
+      }
+    }
+    declineBtn.addEventListener('click', function () { send(declineBtn, 'Declining…', { choice: 'decline' }, "Thanks, we've let " + booker + ' know.'); });
+
+    function showSignup() {
+      btnRow.hidden = true;
+      clear(formSlot);
+      clear(errSlot);
+      const f = {
+        first_name: h('input', { type: 'text', autocomplete: 'given-name', required: true }),
+        last_name: h('input', { type: 'text', autocomplete: 'family-name', required: true }),
+        phone: h('input', { type: 'tel', inputmode: 'tel', autocomplete: 'tel', required: true }),
+        emergency_contact_name: h('input', { type: 'text', autocomplete: 'off', required: true }),
+        emergency_contact_phone: h('input', { type: 'tel', inputmode: 'tel', autocomplete: 'off', required: true }),
+      };
+      const emailBox = h('input', { type: 'text', value: inv.masked_email || '', disabled: true });
+      const slot = h('div', { 'aria-live': 'polite' });
+      const submit = h('button', { class: 'btn primary block', type: 'submit', text: 'Join and accept' });
+      const form = h('form', { class: 'card', novalidate: true },
+        h('h2', { text: 'Tell us about yourself' }),
+        h('p', { class: 'hint', text: 'Hacker Sports Facility is members-only. The owner will review your details before you can play.' }),
+        h('div', { class: 'grid2' }, field('First name', f.first_name), field('Last name', f.last_name)),
+        field('Email', emailBox, 'This is the address the invitation was sent to.'),
+        field('Mobile phone', f.phone),
+        h('h3', { class: 'small-h', text: 'Emergency contact' }),
+        h('div', { class: 'grid2' }, field('Contact name', f.emergency_contact_name), field('Contact phone', f.emergency_contact_phone)),
+        slot, submit,
+        me ? null : h('p', { class: 'center' }, h('a', { href: '#/signin?next=' + encodeURIComponent('#/go?t=' + t), text: 'I already have an account under a different email' })));
+      form.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        clear(slot);
+        const signup = {};
+        for (const k of Object.keys(f)) signup[k] = f[k].value.trim();
+        for (const k of Object.keys(signup)) {
+          if (!signup[k]) { slot.append(banner('Please fill in every field.')); f[k].focus(); return; }
+        }
+        setBusy(submit, true, 'Sending…');
+        try {
+          await call('linkConfirm', { t: t, choice: 'accept', signup: signup });
+          if (ctx.stale()) return;
+          window.scrollTo(0, 0);
+          message('ok', "Thanks! The facility owner will review your membership. You'll get an email when it's approved.");
+        } catch (err) { slot.append(banner(err)); setBusy(submit, false); }
+      });
+      formSlot.append(form);
+      f.first_name.focus();
+    }
+
+    acceptBtn.addEventListener('click', function () {
+      if (!inv.needs_signup) return send(acceptBtn, 'Accepting…', { choice: 'accept' }, "You're in! " + booker + ' can see you on the booking.');
+      if (me) return send(acceptBtn, 'Accepting…', { choice: 'accept', session: getToken() }, "You're in! " + booker + ' can see you on the booking.');
+      showSignup();
+    });
+
+    const list = h('ul', { class: 'invite-times' }, items.map(function (it) {
+      const closed = it.booking_status === 'Cancelled' || it.booking_status === 'Rejected';
+      return h('li', null,
+        h('span', null, h('strong', { text: it.resource_name }), h('span', { class: 'mono', text: ' · ' + it.when }),
+          closed ? h('span', { class: 'tag warn', text: it.booking_status }) : null,
+          it.booking_status === 'Pending' ? h('span', { class: 'tag', text: 'Awaiting approval' }) : null),
+        h('span', { class: 'share', text: it.share_label || (it.share_amount > 0 ? 'Your share: ' + money(it.share_amount) : 'No charge') }));
+    }));
+    clear(content);
+    content.append(
+      h('section', { class: 'card' },
+        h('h2', { text: i.summary || booker + ' invited you to play' }),
+        list,
+        inv.needs_signup && me ? h('p', { class: 'hint', text: 'You are signed in as ' + fullName(me).trim() + '.' }) : null,
+        h('p', { class: 'hint', text: "If you don't accept, nothing is charged to you." }),
+        errSlot, btnRow,
+        inv.needs_signup && me ? h('p', { class: 'center' }, h('button', { class: 'link', type: 'button', text: 'Sign up as a new person instead', onclick: showSignup })) : null),
+      formSlot, toApp());
+  }
+
   if (!t) { message('bad', 'This link is incomplete. Open the link from your email again.'); return; }
 
   let info;
@@ -166,6 +265,7 @@ export async function renderGo(root, ctx) {
   if (info.state === 'expired') return message('bad', info.summary || 'This link has expired. Ask for a new email and try again.');
   if (info.state === 'already') return message('ok', info.summary || 'This has already been done. Nothing more is needed.');
   if (info.state !== 'ready') return message('bad', 'This link could not be used.');
-  if (info.kind === 'guardian') paintGuardian(info);
+  if (info.kind === 'invite') paintInvite(info);
+  else if (info.kind === 'guardian') paintGuardian(info);
   else paintDecision(info);
 }

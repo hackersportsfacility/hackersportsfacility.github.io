@@ -138,6 +138,11 @@ export function fmtDate(s) {
 
 export function isEmail(s) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || '').trim()); }
 export function fullName(p) { return ((p && p.first_name) || '') + ' ' + ((p && p.last_name) || ''); }
+// A player's display name: the name if there is one, else the masked (or, for the owner, full) email.
+export function playerName(p) {
+  const n = ((p && p.name) || fullName(p)).trim();
+  return n || (p && p.email) || 'Invited player';
+}
 
 // ---- hash params (Phase 2B: Stripe return links like #/account?card=done&cs=...) ----
 // Reads the query part of location.hash as a plain object.

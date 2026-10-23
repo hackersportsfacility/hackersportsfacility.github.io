@@ -303,3 +303,17 @@ fieldset.guardian legend { font-weight: 600; padding: 0 6px; }
 .late-reason { font-style: italic; overflow-wrap: anywhere; }
 .segs.col { flex-direction: column; }
 .check-row.tight { margin: 0; }
+
+/* ---------- phase 2C-2: guest invitations by email ---------- */
+.invite-row { display: flex; gap: 8px; align-items: flex-end; }
+.invite-row .field { flex: 1; margin-bottom: 0; min-width: 0; }
+.invite-row .btn { flex: none; }
+.players .pname { overflow-wrap: anywhere; }
+.invite-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin-top: 4px; }
+.btn.small { min-height: 34px; padding: 4px 12px; font-size: 0.85rem; }
+.players li.has-actions { flex-wrap: wrap; }
+.players li .p-email { display: block; font-size: 0.78rem; color: var(--muted); }
+.invite-times { list-style: none; padding: 0; margin: 0 0 12px; }
+.invite-times li { display: flex; justify-content: space-between; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.invite-times li:last-child { border-bottom: 0; }
+.invite-times .share { font-weight: 600; }

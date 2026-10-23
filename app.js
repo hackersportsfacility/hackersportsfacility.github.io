@@ -195,7 +195,7 @@ async function route() {
     go: go,
     stale: function () { return id !== routeId; },
     loadMe: loadMe,
-    afterSignIn: async function () { await loadStartup(); go('#/book'); },
+    afterSignIn: async function (next) { await loadStartup(); go(typeof next === 'string' && next.indexOf('#/go?') === 0 ? next : '#/book'); },
     afterSignOut: function () { resetSession(); go('#/signin'); },
   };
   const root = h('div', { class: 'view' });

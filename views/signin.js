@@ -1,5 +1,5 @@
 import { call, isMock } from '../api.js';
-import { h, clear, isEmail } from '../util.js';
+import { h, clear, isEmail, hashParams } from '../util.js';
 import { banner, field, setBusy } from '../ui.js';
 
 // The email is remembered on this device only (localStorage), never sent anywhere else.
@@ -16,6 +16,9 @@ function rememberEmail(on, value) {
 
 export async function renderSignin(root, ctx) {
   let email = savedEmail();
+  // Only an invitation page (#/go?...) may be returned to after signing in.
+  const wanted = String(hashParams().next || '');
+  const next = wanted.indexOf('#/go?') === 0 ? wanted : '';
   const card = h('section', { class: 'card narrow' });
   root.append(h('h1', { text: 'Sign in' }), card);
 
@@ -45,7 +48,7 @@ export async function renderSignin(root, ctx) {
     card.append(form);
     if (notice) slot.append(banner(notice, 'info'));
     if (isMock()) card.append(h('p', { class: 'hint demo-hint', text: 'Demo: any email works. Use alex@example.com to see the member view. The code is 123456.' }));
-    if (isMock()) card.append(h('p', { class: 'hint demo-hint' }, 'Demo: try a ', h('a', { href: '#/go?t=demo-guardian-sign', text: 'parent/guardian signing link' }), ' or a ', h('a', { href: '#/go?t=demo-booking-approve', text: 'booking approval link' }), '.'));
+    if (isMock()) card.append(h('p', { class: 'hint demo-hint' }, 'Demo: try a ', h('a', { href: '#/go?t=demo-guardian-sign', text: 'parent/guardian signing link' }), ' or a ', h('a', { href: '#/go?t=demo-booking-approve', text: 'booking approval link' }), ' or an ', h('a', { href: '#/go?t=demo-invite-I00001', text: 'invitation link' }), '.'));
     card.append(h('p', { class: 'center' }, 'Not a member yet? ', h('a', { href: '#/join', text: 'Request membership' })));
   }
 
@@ -70,7 +73,7 @@ export async function renderSignin(root, ctx) {
       setBusy(btn, true, 'Signing in…');
       try {
         await call('verifyCode', { email: email, code: code });
-        await ctx.afterSignIn();
+        await ctx.afterSignIn(next);
       } catch (err) {
         slot.append(banner(err));
         setBusy(btn, false);

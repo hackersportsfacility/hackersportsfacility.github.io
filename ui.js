@@ -44,6 +44,13 @@ export function sharePill(status) {
   return d ? h('span', { class: 'pill ' + d[0], text: d[1] }) : null;
 }
 
+// Invitation status pills (Phase 2C-2). invite_status is '' for the booker and for legacy players.
+const INVITE_PILL = { invited: ['warn', 'Invited'], accepted: ['ok', 'Accepted'], declined: ['muted', 'Declined'], no_response: ['muted', 'No response'] };
+export function invitePill(status) {
+  const d = INVITE_PILL[status];
+  return d ? h('span', { class: 'pill ' + d[0], text: d[1] }) : null;
+}
+
 // Starts the Stripe card setup. Demo mode answers { mock_saved: true } and we call onSaved();
 // otherwise the browser goes to the Stripe page. returnTo is 'book' or omitted (Account).
 export async function startCardFlow(btn, errSlot, returnTo, onSaved) {

@@ -1,6 +1,6 @@
 import { call } from '../api.js';
-import { h, add, clear, fmtRange, money, nowLocal, hoursUntil, fullName, hashParams, clearHashParams } from '../util.js';
-import { banner, skeleton, pill, sharePill, setBusy, field } from '../ui.js';
+import { h, add, clear, fmtRange, money, nowLocal, hoursUntil, fullName, playerName, hashParams, clearHashParams } from '../util.js';
+import { banner, skeleton, pill, sharePill, invitePill, setBusy, field } from '../ui.js';
 
 export async function renderBookings(root, ctx) {
   const state = ctx.state;
@@ -66,6 +66,13 @@ export async function renderBookings(root, ctx) {
     const errSlot = h('div');
     const actions = h('div', { class: 'btn-row' });
 
+    // The engine flags only the viewer's own entry (waiver_needed) when their Participant Agreement is missing.
+    function waiverNote(bk) {
+      const mine = bk.players.filter(function (p) { return p.member_id === state.me.member.member_id && p.waiver_needed; })[0];
+      if (!mine || bk.status === 'Cancelled' || bk.status === 'Rejected') return null;
+      return h('p', { class: 'hint warn-text' }, 'Please sign the waiver before you play. ', h('a', { href: '#/waiver', text: 'Sign the waiver' }));
+    }
+
     function paint(bk) {
       clear(card);
       clear(actions);
@@ -73,6 +80,7 @@ export async function renderBookings(root, ctx) {
         h('div', { class: 'bk-head' }, h('div', null, h('h2', { text: bk.resource_name }), h('p', { class: 'mono', text: fmtRange(bk.start, bk.end) })), pill(bk.status)),
         bk.late_cancel ? h('p', { class: 'hint warn-text', text: 'Cancelled within the free cancellation window.' }) : null,
         bk.is_booker ? null : h('p', { class: 'hint', text: 'Booked by ' + fullName(bk.booker) }),
+        waiverNote(bk),
         h('ul', { class: 'players detail' }, bk.players.map(function (p) { return playerRow(bk, p); })),
         h('p', { class: 'hint' }, (bk.pay_mode === 'BookerPays' ? 'Booker covers everyone' : 'Everyone pays their share') + ' · Total ' + money(bk.total_amount)),
         errSlot, actions);
@@ -101,6 +109,56 @@ export async function renderBookings(root, ctx) {
         errSlot.append(banner(e));
         setBusy(btn, false);
       }
+    }
+
+    // Resend / Remove for an invitee who has not accepted (booker only).
+    function playerRow(bk, p) {
+      const li = baseRow(bk, p);
+      if (bk.is_booker && p.invite_id && p.invite_status === 'invited' && (bk.status === 'Pending' || bk.status === 'Approved') && bk.start > nowLocal()) {
+        li.classList.add('has-actions');
+        const row = h('div', { class: 'invite-actions' });
+        const resend = h('button', { class: 'btn small', type: 'button', text: 'Resend' });
+        resend.addEventListener('click', async function () {
+          clear(errSlot);
+          setBusy(resend, true, 'Sending…');
+          try {
+            await call('resendInvite', { invite_id: p.invite_id });
+            errSlot.append(banner('Invitation sent again.', 'info'));
+          } catch (e) { errSlot.append(banner(e)); }
+          setBusy(resend, false);
+        });
+        row.append(resend, h('button', { class: 'btn small danger-ghost', type: 'button', text: 'Remove', onclick: function () { confirmRemove(bk, p); } }));
+        li.append(row);
+      }
+      return li;
+    }
+
+    function confirmRemove(bk, p) {
+      clear(actions);
+      clear(errSlot);
+      const free = state.me.settings.free_cancel_hours;
+      const yes = h('button', { class: 'btn danger', type: 'button', text: 'Yes, remove' });
+      const panel = h('div', { class: 'confirm', role: 'alertdialog', 'aria-label': 'Confirm remove' },
+        h('p', { text: 'Remove ' + playerName(p) + ' from this booking? Their invitation will stop working.' }),
+        h('p', { class: 'hint', text: hoursUntil(bk.start) > free
+          ? 'Their share is taken off and the cost is split between the other players.'
+          : 'This is close to the start, so their share is charged to you at the start time.' }),
+        h('div', { class: 'btn-row' }, yes, h('button', { class: 'btn', type: 'button', text: 'Keep them', onclick: function () { paint(bk); } })));
+      yes.addEventListener('click', async function () {
+        setBusy(yes, true, 'Removing…');
+        try {
+          const out = await call('removeInvite', { booking_id: bk.booking_id, invite_id: p.invite_id });
+          if (ctx.stale()) return;
+          if (out && out.booking) { paint(out.booking); errSlot.append(banner('Removed.', 'info')); }
+          else await load();
+        } catch (e) {
+          clear(errSlot);
+          errSlot.append(banner(e));
+          setBusy(yes, false);
+        }
+      });
+      actions.append(panel);
+      yes.focus();
     }
 
     // What the cancel will mean: Pending requests and Approved bookings more than the free window ahead
@@ -150,15 +208,17 @@ export async function renderBookings(root, ctx) {
   await load();
 }
 
-function playerRow(bk, p) {
+function baseRow(bk, p) {
   let status = p.share_status;
   if (!status && bk.pay_mode === 'BookerPays' && !(p.share_amount > 0)) status = 'CoveredByBooker';
-  const showAmount = status !== 'Waived' && status !== 'CoveredByBooker' && status !== 'Cancelled' && p.share_amount > 0;
+  const invited = p.invite_status === 'invited' || p.invite_status === 'no_response' || p.invite_status === 'declined';
+  const showAmount = !invited && status !== 'Waived' && status !== 'CoveredByBooker' && status !== 'Cancelled' && p.share_amount > 0;
   return h('li', null,
-    h('span', { class: 'pname' }, fullName(p),
+    h('span', { class: 'pname' }, playerName(p),
       p.status && p.status !== 'Active' ? h('span', { class: 'tag warn', text: p.status === 'Pending' ? 'Awaiting approval' : p.status }) : null),
     h('span', { class: 'share-cell' },
       showAmount ? h('span', { class: 'mono share', text: money(p.share_amount) }) : null,
       showAmount && p.credit_applied > 0 ? h('span', { class: 'hint credit-used', text: '(' + money(p.credit_applied) + ' credit used)' }) : null,
-      sharePill(status)));
+      invited ? null : sharePill(status),
+      invitePill(p.invite_status)));
 }

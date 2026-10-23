@@ -517,10 +517,9 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
 
   const sheet = openSheet(isOwner ? 'Book' : (multi ? 'Request bookings' : 'Request a booking'), hooks.onChanged);
   const body = sheet.body;
-  const guests = []; // { member_id?, first_name, last_name, email?, phone?, isNew }
+  const guests = []; // { member_id, first_name, last_name } for a known player, or { email } for an email invite
   let payMode = 'Split';
   let known = [];
-  let addingNew = false;
 
   const summary = h('div', { class: 'summary' }, h('ul', { class: 'sessions' }, merged.map(function (s) {
     return h('li', null, h('strong', { text: resName(s.resource_id) }),
@@ -529,7 +528,6 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
 
   const playersSlot = h('div');
   const knownSlot = h('div');
-  const newSlot = h('div');
   const priceSlot = h('div', { class: 'price', 'aria-live': 'polite' });
   const errSlot = h('div');
   const actionSlot = h('div');
@@ -547,9 +545,9 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
     ul.append(h('li', null, h('span', { text: fullName(me.member) }), h('span', { class: 'tag', text: 'You' })));
     guests.forEach(function (g, i) {
       ul.append(h('li', null,
-        h('span', { text: fullName(g) }),
-        g.isNew ? h('span', { class: 'tag warn', text: 'Needs approval' }) : null,
-        h('button', { class: 'icon-btn small', type: 'button', 'aria-label': 'Remove ' + fullName(g), onclick: function () { guests.splice(i, 1); refresh(); } }, icon('x', 16))));
+        h('span', { text: g.email || fullName(g) }),
+        h('span', { class: 'tag warn', text: 'Invited' }),
+        h('button', { class: 'icon-btn small', type: 'button', 'aria-label': 'Remove ' + (g.email || fullName(g)), onclick: function () { guests.splice(i, 1); refresh(); } }, icon('x', 16))));
     });
     playersSlot.append(h('p', { class: 'count', text: (guests.length + 1) + ' of ' + maxPlayers + ' players' }), ul);
   }
@@ -563,53 +561,31 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
       avail.forEach(function (k) {
         chips.append(h('button', {
           class: 'chip', type: 'button', disabled: atMax, 'aria-label': 'Add ' + fullName(k),
-          onclick: function () { guests.push({ member_id: k.member_id, first_name: k.first_name, last_name: k.last_name, isNew: false }); refresh(); },
+          onclick: function () { guests.push({ member_id: k.member_id, first_name: k.first_name, last_name: k.last_name }); refresh(); },
         }, icon('plus', 14), fullName(k)));
       });
       knownSlot.append(h('h3', { class: 'small-h', text: 'Known players' }), chips);
     }
-    if (!addingNew) {
-      knownSlot.append(h('button', {
-        class: 'btn ghost', type: 'button', disabled: atMax, text: 'Add new guest',
-        onclick: function () { addingNew = true; renderNew(); renderKnown(); const f = newSlot.querySelector('input'); if (f) f.focus(); },
-      }));
+    const email = h('input', { type: 'email', inputmode: 'email', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', disabled: atMax, placeholder: 'name@example.com' });
+    const slot = h('div', { 'aria-live': 'polite' });
+    const addBtn = h('button', { class: 'btn', type: 'button', disabled: atMax, text: 'Add' });
+    function addEmail() {
+      clear(slot);
+      const e = email.value.trim().toLowerCase();
+      if (!isEmail(e)) { slot.append(banner('That email address does not look right.')); email.focus(); return; }
+      const dupe = e === me.member.email.toLowerCase() || guests.some(function (x) { return x.email && x.email.toLowerCase() === e; });
+      if (dupe) { slot.append(banner('That person is already on this booking.')); email.focus(); return; }
+      guests.push({ email: e });
+      refresh();
+      const again = knownSlot.querySelector('input[type=email]');
+      if (again && !again.disabled) again.focus();
     }
+    addBtn.addEventListener('click', addEmail);
+    email.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); addEmail(); } });
+    knownSlot.append(h('h3', { class: 'small-h', text: 'Invite by email' }),
+      h('div', { class: 'invite-row' }, field('Email', email), addBtn), slot,
+      h('p', { class: 'hint', text: "Each player gets an email to accept. If they don't accept, their share is charged to you at the start time." }));
     if (atMax) knownSlot.append(h('p', { class: 'hint', text: 'This booking is full.' }));
-  }
-
-  function renderNew() {
-    clear(newSlot);
-    if (!addingNew) return;
-    const f = {
-      first_name: h('input', { type: 'text', autocomplete: 'off' }),
-      last_name: h('input', { type: 'text', autocomplete: 'off' }),
-      email: h('input', { type: 'email', inputmode: 'email', autocomplete: 'off', autocapitalize: 'none' }),
-      phone: h('input', { type: 'tel', inputmode: 'tel', autocomplete: 'off' }),
-    };
-    const slot = h('div');
-    const form = h('div', { class: 'guest-form' },
-      h('h3', { class: 'small-h', text: 'New guest' }),
-      h('div', { class: 'grid2' }, field('First name', f.first_name), field('Last name', f.last_name)),
-      field('Email', f.email), field('Mobile phone', f.phone),
-      h('p', { class: 'hint', text: 'New guests need owner approval before they can play.' }),
-      slot,
-      h('div', { class: 'btn-row' },
-        h('button', {
-          class: 'btn primary', type: 'button', text: 'Add guest', onclick: function () {
-            clear(slot);
-            const g = { isNew: true };
-            for (const k of Object.keys(f)) g[k] = f[k].value.trim();
-            if (!g.first_name || !g.last_name || !g.email || !g.phone) { slot.append(banner('Fill in all four fields for the guest.')); return; }
-            if (!isEmail(g.email)) { slot.append(banner('That guest email does not look right.')); return; }
-            const dupe = g.email.toLowerCase() === me.member.email.toLowerCase() || guests.some(function (x) { return x.email && x.email.toLowerCase() === g.email.toLowerCase(); });
-            if (dupe) { slot.append(banner('That person is already on this booking.')); return; }
-            guests.push(g);
-            addingNew = false;
-            refresh();
-          },
-        }),
-        h('button', { class: 'btn ghost', type: 'button', text: 'Cancel', onclick: function () { addingNew = false; refresh(); } })));
-    newSlot.append(form);
   }
 
   function renderPrice() {
@@ -629,7 +605,7 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
     if (credit > 0) priceSlot.append(h('p', { class: 'hint credit-note', text: 'You have ' + money(credit) + ' in credit, which will be used first.' }));
   }
 
-  function refresh() { renderPlayers(); renderKnown(); renderNew(); renderPrice(); }
+  function refresh() { renderPlayers(); renderKnown(); renderPrice(); }
 
   const usageMsg = priv ? 'No weekly limit.' : (me.week.used + ' of ' + me.week.limit + ' bookings used this week');
   const limitMsg = !priv && limitHit ? 'This would go over your ' + me.week.limit + ' bookings this week (each 2-hour time counts as one).' : '';
@@ -638,7 +614,7 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
     h('p', { class: 'usage', text: usageMsg }),
     limitHit ? banner(limitMsg) : null,
     capErrors.map(function (m) { return banner(m); }),
-    h('h3', { class: 'small-h', text: 'Players' }), playersSlot, knownSlot, newSlot,
+    h('h3', { class: 'small-h', text: 'Players' }), playersSlot, knownSlot,
     priv ? null : h('fieldset', { class: 'paymode' }, h('legend', { text: 'Payment' }), h('div', { class: 'segs' }, radios)),
     priceSlot,
     priv ? null : h('p', { class: 'hint', text: "Your card is charged about 24 hours before the booking. Players who don't pay are charged to you at the start time." }),
@@ -682,7 +658,7 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
     clear(errSlot);
     setBusy(submit, true, 'Sending…');
     const payload = guests.map(function (g) {
-      return g.member_id ? { member_id: g.member_id } : { first_name: g.first_name, last_name: g.last_name, email: g.email, phone: g.phone };
+      return g.member_id ? { member_id: g.member_id } : { email: g.email };
     });
     try {
       const req = {

@@ -1,6 +1,6 @@
 import { call, isMock } from '../api.js';
-import { h, add, clear, fmtRange, fmtDay, fmtDate, timeRange, money, fullName, parseLocal } from '../util.js';
-import { banner, skeleton, pill, rolePill, sharePill, field, setBusy } from '../ui.js';
+import { h, add, clear, fmtRange, fmtDay, fmtDate, timeRange, money, fullName, playerName, parseLocal } from '../util.js';
+import { banner, skeleton, pill, rolePill, sharePill, invitePill, field, setBusy } from '../ui.js';
 
 function hoursLabel(start, end) {
   const a = parseLocal(start), b = parseLocal(end);
@@ -91,8 +91,13 @@ export async function renderOwner(root, ctx) {
         h('p', null, h('strong', { text: fullName(b.booker) }), email ? ' · ' + email : '', phone ? ' · ' + phone : ''),
         h('ul', { class: 'players detail' }, b.players.map(function (p) {
           return h('li', null,
-            h('span', { class: 'pname' }, fullName(p), p.status !== 'Active' ? h('span', { class: 'tag warn', text: p.status === 'Pending' ? 'Guest needs approval' : p.status }) : null),
-            h('span', { class: 'mono share', text: p.share_status === 'Waived' ? 'Waived' : money(p.share_amount) }));
+            h('span', { class: 'pname' }, playerName(p),
+              p.status !== 'Active' && p.status !== 'Invited' ? h('span', { class: 'tag warn', text: p.status === 'Pending' ? 'Guest needs approval' : p.status }) : null,
+              p.waiver_needed ? h('span', { class: 'tag warn', text: 'No waiver' }) : null,
+              p.email && playerName(p) !== p.email ? h('span', { class: 'p-email', text: p.email }) : null),
+            h('span', { class: 'share-cell' },
+              h('span', { class: 'mono share', text: p.share_status === 'Waived' ? 'Waived' : money(p.share_amount) }),
+              invitePill(p.invite_status)));
         })),
         decisionRow({
           waive: true,
@@ -175,7 +180,7 @@ export async function renderOwner(root, ctx) {
     });
     const list = h('ul', { class: 'players detail' }, checks.map(function (c) {
       return h('li', null,
-        h('label', { class: 'check-row tight' }, c.cb, h('span', { text: fullName(c.p) })),
+        h('label', { class: 'check-row tight' }, c.cb, h('span', { text: playerName(c.p) })),
         h('span', { class: 'share-cell' }, c.p.share_amount > 0 ? h('span', { class: 'mono share', text: money(c.p.share_amount) }) : null, sharePill(c.p.share_status)));
     }));
     sync();
@@ -377,10 +382,16 @@ export async function renderOwner(root, ctx) {
       });
       roleSlot.append(field('Role', sel));
     }
-    function paint(mm) {
+    // Unpaid shares the booker had to cover (Strikes tab). Owner and Family play free, so they never get any.
+    function strikesLine(mm) {
+      const n = Number(mm.strike_count) || 0;
+      return h('p', { class: 'hint' }, h('span', { class: 'pill ' + (n ? 'warn' : 'muted'), text: n + (n === 1 ? ' strike' : ' strikes') }));
+    }
+  function paint(mm) {
       clear(card); clear(actions);
       card.append(
-        h('div', { class: 'bk-head' }, h('div', null, h('h3', { text: fullName(mm) }), h('p', { class: 'hint', text: [mm.email, mm.phone].filter(Boolean).join(' · ') })),
+        h('div', { class: 'bk-head' }, h('div', null, h('h3', { text: fullName(mm) }), h('p', { class: 'hint', text: [mm.email, mm.phone].filter(Boolean).join(' · ') }),
+            mm.role === 'Owner' || mm.role === 'Family' ? null : strikesLine(mm)),
           h('div', { class: 'pills' }, rolePill(mm.role), pill(mm.status))),
         roleSlot, errSlot, actions);
       paintRole(mm);

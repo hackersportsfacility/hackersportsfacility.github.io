@@ -16,7 +16,7 @@ const RESOURCES = [
 ];
 
 const now0 = nowLocal();
-let seqM = 7, seqB = 0, seqS = 0;
+let seqM = 8, seqB = 0, seqS = 0;
 
 function member(id, first, last, email, role, status, extra) {
   return Object.assign({
@@ -41,9 +41,21 @@ const members = [
   member('M0005', 'Sam', 'Rivera', 'sam@example.com', 'Guest', 'Pending', { invited_by_member_id: 'M0002', approved_at: '' }),
   member('M0006', 'Chris', 'Wong', 'chris@example.com', 'Member', 'Suspended'),
   member('M0007', 'Jordan', 'Hacker', 'jordan@example.com', 'Family', 'Active'),
+  // Placeholder for an emailed invitee who is not a member yet (status Invited: cannot sign in).
+  member('M0008', '', '', 'taylor@example.com', 'Guest', 'Invited', { invited_by_member_id: 'M0002', approved_at: '', phone: '', emergency_contact_name: '', emergency_contact_phone: '' }),
 ];
 
 const bookings = [];
+// Phase 2C-2: invites { invite_id, email, member_id, booker, booking_ids, share_ids, status, resent_count, sent_at (ms) }
+const invites = [];
+let seqI = 0;
+const inviteById = function (id) { return invites.filter(function (i) { return i.invite_id === id; })[0]; };
+const inviteOfPlayer = function (p) { return p.invite_id ? inviteById(p.invite_id) : null; };
+const isAccepted = function (p) { const i = inviteOfPlayer(p); return !i || i.status === 'Accepted'; };
+function maskEmail(e) {
+  const m = /^([^@]+)@(.+)$/.exec(String(e || '').trim());
+  return m ? m[1].charAt(0) + '***@' + m[2] : '***';
+}
 const played = { M0001: ['M0002'], M0002: ['M0001', 'M0003', 'M0004'] };
 
 function endOf(start) {
@@ -91,7 +103,7 @@ function addBooking(o) {
 
 // ---- seed data, relative to today ----
 addBooking({ resource_id: 'COURT2', start: dayAt(1, 18), status: 'Approved', booker: 'M0002', guests: ['M0001', 'M0003'] });
-addBooking({ resource_id: 'COURT1', start: dayAt(3, 10), status: 'Pending', booker: 'M0002', guests: ['M0003', 'M0005'] });
+addBooking({ resource_id: 'COURT1', start: dayAt(3, 10), status: 'Pending', booker: 'M0002', guests: ['M0003', 'M0005', 'M0008'] });
 addBooking({ resource_id: 'COURT1', start: dayAt(4, 12), status: 'Approved', booker: 'M0001', guests: ['M0002'] });
 addBooking({ resource_id: 'COURT1', start: dayAt(0, 20), status: 'Approved', booker: 'M0004', guests: ['M0003'] });
 addBooking({ resource_id: 'COURT1', start: dayAt(1, 8), status: 'Approved', booker: 'M0004', guests: [] });
@@ -179,6 +191,14 @@ export function switchUser(token) {
   return 'mock-M0001';
 }
 
+function inviteStatusOf(inv) {
+  if (!inv) return '';
+  if (inv.status === 'Accepted') return 'accepted';
+  if (inv.status === 'Declined' || inv.status === 'Removed') return 'declined';
+  if (inv.status === 'Expired') return 'no_response';
+  return 'invited';
+}
+
 function detail(b, v, withContact) {
   const bk = memById(b.booker);
   const owner = v && v.role === 'Owner';
@@ -187,12 +207,28 @@ function detail(b, v, withContact) {
     resource_name: resById(b.resource_id).name, start: b.start, end: b.end, pay_mode: b.pay_mode,
     total_amount: b.total_amount, is_booker: !!v && b.booker === v.member_id,
     booker: { first_name: bk.first_name, last_name: bk.last_name },
-    players: b.players.map(function (p) {
+    players: b.players.filter(function (p) {
+      const inv = inviteOfPlayer(p);
+      if (!inv || owner) return true;
+      if (inv.status === 'Removed') return false;
+      return inv.status !== 'Declined' || b.booker === (v && v.member_id); // declined invitees are shown to the booker only
+    }).map(function (p) {
       const m = memById(p.member_id);
-      const o = { member_id: m.member_id, first_name: m.first_name, last_name: m.last_name, status: m.status, share_amount: p.share_amount, share_status: p.share_status, credit_applied: p.credit_applied || 0 };
+      const inv = inviteOfPlayer(p);
+      const isBooker = !!v && b.booker === v.member_id;
+      const o = { member_id: m.member_id, first_name: m.first_name, last_name: m.last_name, status: m.status, share_amount: p.share_amount, share_status: p.share_status, credit_applied: p.credit_applied || 0, invite_status: inviteStatusOf(inv) };
+      if (inv && inv.status !== 'Accepted' && !owner) { // masked until they accept: no name, id or phone
+        delete o.member_id;
+        o.first_name = maskEmail(inv.email);
+        o.last_name = '';
+        o.name = maskEmail(inv.email);
+        o.status = '';
+      }
+      if (owner && inv) { o.email = inv.email; o.name = (m.first_name + ' ' + m.last_name).trim() || inv.email; }
+      if (isBooker && inv) { o.invite_id = inv.invite_id; o.share_id = p.share_id; }
       if (v && p.member_id === v.member_id) { // only the viewer's own share exposes its id
         o.share_id = p.share_id;
-        o.can_pay = (p.share_status === 'Pending' || p.share_status === 'Unpaid') && p.share_amount > 0 && active(b);
+        o.can_pay = (p.share_status === 'Pending' || p.share_status === 'Unpaid') && p.share_amount > 0 && active(b) && isAccepted(p);
       }
       return o;
     }),
@@ -261,6 +297,8 @@ function run(req) {
       case 'myBookings': return myBookings(req, v);
       case 'cancelBooking': return cancelBooking(req, v);
       case 'knownPlayers': return knownPlayers(v);
+      case 'removeInvite': return removeInvite(req, v);
+      case 'resendInvite': return resendInvite(req, v);
       case 'acceptTerms': return acceptTerms(req, v);
       case 'startCardSetup': return startCardSetup(req, v);
       case 'confirmCardSetup': return confirmCardSetup(req, v);
@@ -294,6 +332,8 @@ export const DEMO_LINKS = [
   ['demo-member-approve', 'New member: approve'],
   ['demo-member-reject', 'New member: reject'],
   ['demo-guardian-sign', 'Parent or guardian: sign'],
+  ['demo-invite-I00001', 'Invitation: new person (sign-up form)'],
+  ['demo-invite-I00002', 'Invitation: existing member'],
   ['demo-expired', 'Expired link'],
   ['demo-bogus', 'Invalid link'],
 ];
@@ -304,6 +344,7 @@ function linkParts(t) {
 }
 function linkInfo(r) {
   const t = String(r.t || '');
+  if (/^demo-invite-/.test(t)) return inviteInfo(t);
   if (t === 'demo-expired') return ok({ kind: 'booking', d: 'approve', state: 'expired', summary: 'This link has expired. Ask for a new email and try again.', details: [] });
   const p = linkParts(t);
   if (!p) return ok({ kind: '', d: '', state: 'invalid', summary: 'This link is not valid. Please use the link from your most recent email.', details: [] });
@@ -350,6 +391,7 @@ function linkInfo(r) {
 }
 function linkConfirm(r) {
   const t = String(r.t || '');
+  if (/^demo-invite-/.test(t)) return inviteConfirm(r, t);
   const info = linkInfo({ t: t }).data;
   if (info.state === 'invalid' || info.state === 'expired') return err('BAD_REQUEST', info.summary);
   if (info.state === 'already') return ok({ ok: true, message: info.summary, final: true });
@@ -395,7 +437,7 @@ function requestMembership(r) {
 function requestCode(r) {
   if (!r.email) return err('BAD_REQUEST', 'Enter your email address.');
   const m = memByEmail(r.email);
-  if (!m) return ok({ sent: true });
+  if (!m || m.status === 'Invited' || m.status === 'Merged') return ok({ sent: true });
   if (m.status === 'Pending') return err('FORBIDDEN', 'Your membership is waiting for approval.');
   if (m.status !== 'Active') return err('FORBIDDEN', 'Your membership is not active. Contact the facility.');
   return ok({ sent: true });
@@ -618,8 +660,9 @@ function createBooking(r, v) {
   }
   const gr = checkGuests(r.guests, v, SETTINGS.max_players_per_court * res.courts);
   if (gr.error) return gr.error;
-  const ids = [v.member_id].concat(createGuests(gr.list, v));
+  const ids = [v.member_id].concat(createGuests(gr.list));
   const b = addBooking({ resource_id: res.resource_id, start: r.start, status: v.role === 'Family' ? 'Pending' : (priv ? 'Approved' : 'Pending'), booker: v.member_id, guests: ids.slice(1), pay_mode: priv ? 'BookerPays' : payMode });
+  attachInvites([b], gr.list, v);
   return ok({ booking: detail(b, v) });
 }
 
@@ -672,40 +715,70 @@ function confirmPayment(r, v) {
   return ok({ share: null });
 }
 
-// Validates guests without creating anyone. Returns { list } or { error }.
+// Validates the guests without creating anyone. Each guest is { member_id } (a Known player) or { email }.
+// Returns { list: [{ member?, email }] } or { error }. Nothing here reveals whether an email belongs to a member.
 function checkGuests(input, v, maxPlayers) {
   const guests = Array.isArray(input) ? input : [];
   if (1 + guests.length > maxPlayers) return { error: err('TOO_MANY_PLAYERS', 'This booking allows up to ' + maxPlayers + ' players.') };
-  const emails = [v.email.toLowerCase()], list = [];
+  const known = knownPlayers(v).data.map(function (k) { return k.member_id; });
+  const seen = [], list = [];
   for (let i = 0; i < guests.length; i++) {
-    const g = guests[i];
-    const m = g.member_id ? memById(g.member_id) : memByEmail(g.email);
-    if (g.member_id && (!m || m.status !== 'Active')) return { error: err('BAD_REQUEST', 'One of the players could not be found.') };
-    if (!m) {
-      if (!g.first_name || !g.last_name || !g.email || !g.phone || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(g.email)) {
-        return { error: err('BAD_REQUEST', 'Each new guest needs a first name, last name, email and mobile number.') };
-      }
-    } else if (m.status === 'Suspended' || m.status === 'Revoked') {
-      return { error: err('FORBIDDEN', m.first_name + ' ' + m.last_name + ' cannot be added as a player right now.') };
+    const g = guests[i] || {};
+    let m, email;
+    if (g.member_id) {
+      if (known.indexOf(g.member_id) === -1) return { error: err('NOT_FOUND', 'That player could not be found.') };
+      m = memById(g.member_id);
+      email = m.email;
+    } else {
+      email = String(g.email || '').trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: err('BAD_REQUEST', 'That email address does not look right.') };
+      m = memByEmail(email);
     }
-    const em = (m ? m.email : g.email).trim().toLowerCase();
-    if (emails.indexOf(em) !== -1) return { error: err('BAD_REQUEST', 'The same person is listed twice.') };
-    emails.push(em);
-    list.push(m || g);
+    const key = (m ? m.email : email).toLowerCase();
+    if (key === v.email.toLowerCase()) return { error: err('BAD_REQUEST', 'You are already on this booking.') };
+    if (seen.indexOf(key) !== -1) return { error: err('BAD_REQUEST', 'The same person is listed twice.') };
+    seen.push(key);
+    list.push({ member: m, email: key });
   }
   return { list: list };
 }
 
-// Creates Pending guest members for new people; returns every guest's member_id.
-function createGuests(list, v) {
-  return list.map(function (m) {
-    if (m.member_id) return m.member_id;
+// Matches each email to a member, or makes a placeholder (status Invited). Returns every guest's member_id.
+function createGuests(list) {
+  return list.map(function (g) {
+    if (g.member) return g.member.member_id;
     seqM++;
-    const nm = member('M' + ('0000' + seqM).slice(-4), m.first_name.trim(), m.last_name.trim(), m.email.trim(), 'Guest', 'Pending',
-      { phone: m.phone, invited_by_member_id: v.member_id, approved_at: '', created_at: nowLocal() });
+    const nm = member('M' + ('0000' + seqM).slice(-4), '', '', g.email, 'Guest', 'Invited',
+      { approved_at: '', phone: '', emergency_contact_name: '', emergency_contact_phone: '', created_at: nowLocal() });
     members.push(nm);
+    g.member = nm;
     return nm.member_id;
   });
+}
+
+// One invite per invitee, covering every booking made in the request. Logs the link the email would carry.
+function attachInvites(made, list, v) {
+  list.forEach(function (g) {
+    const m = g.member;
+    const mine = made.map(function (b) { return b.players.filter(function (p) { return p.member_id === m.member_id; })[0]; });
+    seqI++;
+    const inv = {
+      invite_id: 'I' + ('00000' + seqI).slice(-5), email: g.email, member_id: m.member_id, booker: v.member_id,
+      booking_ids: made.map(function (b) { return b.booking_id; }), share_ids: mine.map(function (p) { return p.share_id; }),
+      status: m.status === 'Suspended' || m.status === 'Revoked' ? 'Withheld' : 'Invited', resent_count: 0, sent_at: Date.now(),
+    };
+    mine.forEach(function (p) { p.invite_id = inv.invite_id; });
+    invites.push(inv);
+    logInvite(inv);
+  });
+}
+
+function inviteLink(inv) {
+  return location.origin + location.pathname + location.search + '#/go?t=demo-invite-' + inv.invite_id;
+}
+function logInvite(inv) {
+  if (inv.status === 'Withheld') return;
+  try { console.info('[demo] Invitation email to ' + inv.email + ': ' + inviteLink(inv)); } catch (e) { /* no console */ }
 }
 
 function sessionLabel(res, s) {
@@ -788,15 +861,16 @@ function createBookings(r, v) {
   if (taken.length) {
     return err('SLOT_TAKEN', 'These times are already booked: ' + taken.map(function (s) { return sessionLabel(resById(s.resource_id), s); }).join('; ') + '.');
   }
-  const guestIds = createGuests(gr.list, v);
+  const guestIds = createGuests(gr.list);
   const status = v.role === 'Family' ? 'Pending' : (priv ? 'Approved' : 'Pending');
   const made = merged.map(function (s) {
     return addBooking({ resource_id: s.resource_id, start: s.start, end: s.end, status: status, booker: v.member_id, guests: guestIds, pay_mode: priv ? 'BookerPays' : payMode, notes: r.note || '' });
   });
+  attachInvites(made, gr.list, v);
   return ok({ bookings: made.map(function (b) { return detail(b, v); }) });
 }
 
-function mine(b, v) { return b.booker === v.member_id || b.players.some(function (p) { return p.member_id === v.member_id; }); }
+function mine(b, v) { return b.booker === v.member_id || b.players.some(function (p) { return p.member_id === v.member_id && isAccepted(p); }); }
 
 function myBookings(r, v) {
   const nowS = nowLocal();
@@ -877,7 +951,7 @@ function knownPlayers(v) {
   const ids = {};
   bookings.forEach(function (b) {
     if (!mine(b, v)) return;
-    b.players.forEach(function (p) { if (p.member_id !== v.member_id) ids[p.member_id] = true; });
+    b.players.forEach(function (p) { if (p.member_id !== v.member_id && isAccepted(p)) ids[p.member_id] = true; });
   });
   (played[v.member_id] || []).forEach(function (id) { ids[id] = true; });
   return ok(Object.keys(ids).map(memById).filter(function (m) { return m && m.status === 'Active'; })
@@ -979,3 +1053,141 @@ function ownerAction(a, r, v) {
   }
   return err('BAD_REQUEST', 'Unknown action: ' + a);
 }
+
+// ---- guest invitations (Phase 2C-2) ----
+function findShare(shareId) {
+  for (let i = 0; i < bookings.length; i++) {
+    const p = bookings[i].players.filter(function (x) { return x.share_id === shareId; })[0];
+    if (p) return { b: bookings[i], p: p };
+  }
+  return null;
+}
+
+// A declined or removed invite: more than the free-cancel window ahead, the share is dropped and the total is
+// split again between the others (paid shares keep their amount); closer than that, the booker just covers it.
+function dropInvite(inv, status) {
+  inv.status = status;
+  inv.share_ids.forEach(function (sid) {
+    const hit = findShare(sid);
+    if (!hit || !active(hit.b)) return;
+    if (hoursUntil(hit.b.start) <= SETTINGS.free_cancel_hours) return;
+    hit.p.share_status = 'Declined';
+    hit.p.share_amount = 0;
+    if (hit.b.pay_mode === 'Split' && hit.b.total_amount > 0) {
+      const open = hit.b.players.filter(function (x) { return x.share_status === 'Pending' || x.share_status === 'Unpaid'; });
+      const kept = hit.b.players.filter(function (x) { return x.share_status === 'Paid'; }).reduce(function (a, x) { return a + x.share_amount; }, 0);
+      const parts = splitShares(Math.max(0, hit.b.total_amount - kept), open.length || 1);
+      open.forEach(function (x, i) { x.share_amount = parts[i]; });
+    }
+  });
+}
+
+function removeInvite(r, v) {
+  const b = bookings.filter(function (x) { return x.booking_id === r.booking_id; })[0];
+  if (!b) return err('NOT_FOUND', 'We could not find that booking.');
+  if (b.booker !== v.member_id) return err('FORBIDDEN', 'Only the person who booked can do that.');
+  const inv = inviteById(r.invite_id);
+  if (!inv || inv.booker !== v.member_id || !b.players.some(function (x) { return inviteOfPlayer(x) === inv; })) return err('NOT_FOUND', 'That player could not be found.');
+  if (inv.status === 'Accepted') return err('BAD_REQUEST', 'That player has already accepted.');
+  if (inv.status === 'Invited' || inv.status === 'Withheld') dropInvite(inv, 'Removed');
+  return ok({ booking: detail(b, v) });
+}
+
+function resendInvite(r, v) {
+  const inv = inviteById(r.invite_id);
+  if (!inv || inv.booker !== v.member_id) return err('NOT_FOUND', 'That invitation could not be found.');
+  if (inv.status !== 'Invited' && inv.status !== 'Withheld') return err('BAD_REQUEST', 'This invitation can no longer be sent again.');
+  if (inv.resent_count >= 2 || Date.now() - inv.sent_at < 12 * 3600 * 1000) {
+    return err('RATE_LIMITED', 'You can resend this invitation once every 12 hours, up to 2 times.');
+  }
+  inv.resent_count++;
+  inv.sent_at = Date.now();
+  logInvite(inv);
+  return ok({ sent: true });
+}
+
+function inviteItems(inv) {
+  return inv.booking_ids.map(function (bid, i) {
+    const b = bookings.filter(function (x) { return x.booking_id === bid; })[0];
+    const p = b && findShare(inv.share_ids[i]);
+    const d = b.start.slice(0, 10);
+    const amt = p && p.p.share_status !== 'Waived' && p.p.share_status !== 'Declined' ? p.p.share_amount : 0;
+    return {
+      booking_id: b.booking_id, resource_name: resById(b.resource_id).name,
+      when: dowName(d) + ' ' + monthName(d) + ' ' + dayNum(d) + ', ' + timeRange(b.start, b.end, true),
+      share_amount: amt, share_label: amt > 0 ? 'Your share: $' + amt.toFixed(2) : 'No charge', booking_status: b.status,
+    };
+  });
+}
+
+function inviteInfo(t) {
+  const m = /^demo-invite-(I\d{5})$/.exec(t);
+  const inv = m && inviteById(m[1]);
+  const bad = function (state, summary) { return ok({ kind: 'invite', state: state, summary: summary }); };
+  if (!inv || inv.status === 'Withheld') return bad('invalid', 'This link is not valid. Please use the link from your most recent email.');
+  if (inv.status === 'Accepted') return bad('already', 'You already accepted this invitation. Nothing more is needed.');
+  if (inv.status === 'Declined') return bad('already', 'You already declined this invitation. Nothing more is needed.');
+  if (inv.status !== 'Invited') return bad('expired', 'This invitation is no longer open.');
+  const bk = memById(inv.booker);
+  const name = bk.first_name + ' ' + bk.last_name;
+  return ok({
+    kind: 'invite', state: 'ready', summary: bk.first_name + ' invited you to play at ' + FACILITY,
+    invite: { booker_name: name, items: inviteItems(inv), needs_signup: memById(inv.member_id).status === 'Invited', masked_email: maskEmail(inv.email) },
+  });
+}
+
+function inviteConfirm(r, t) {
+  const info = inviteInfo(t).data;
+  if (info.state === 'invalid' || info.state === 'expired') return err('BAD_REQUEST', info.summary);
+  if (info.state === 'already') return ok({ ok: true, message: info.summary, final: true });
+  const inv = inviteById(/^demo-invite-(I\d{5})$/.exec(t)[1]);
+  const bk = memById(inv.booker);
+  if (r.choice === 'decline') {
+    dropInvite(inv, 'Declined');
+    return ok({ ok: true, message: "Thanks, we've let " + bk.first_name + ' know.', final: true });
+  }
+  if (r.choice !== 'accept') return err('BAD_REQUEST', 'Choose Accept or Decline.');
+  const m = memById(inv.member_id);
+  if (m.status === 'Invited') {
+    if (r.session) { // "I have an account under a different email": the signed-in member takes the place
+      const me = viewer(r.session);
+      if (!me) return err('UNAUTHORIZED', 'Please sign in again.');
+      const clash = inv.booking_ids.some(function (bid) {
+        return bookings.some(function (b) { return b.booking_id === bid && (b.booker === me.member_id || b.players.some(function (p) { return p.member_id === me.member_id; })); });
+      });
+      if (clash) return err('BAD_REQUEST', 'You are already on this booking.');
+      inv.share_ids.forEach(function (sid) { const hit = findShare(sid); if (hit) hit.p.member_id = me.member_id; });
+      m.status = 'Merged';
+      m.notes = 'Merged into ' + me.member_id + ' (accepted an invitation sent to ' + inv.email + ').';
+      inv.member_id = me.member_id;
+      inv.status = 'Accepted';
+      return ok({ ok: true, message: "You're in! " + bk.first_name + ' can see you on the booking.', final: true });
+    }
+    const sg = r.signup || {};
+    const need = ['first_name', 'last_name', 'phone', 'emergency_contact_name', 'emergency_contact_phone'];
+    for (let i = 0; i < need.length; i++) {
+      if (!String(sg[need[i]] || '').trim()) return err('BAD_REQUEST', 'Please fill in every field.');
+    }
+    Object.assign(m, { first_name: sg.first_name.trim(), last_name: sg.last_name.trim(), phone: sg.phone.trim(),
+      emergency_contact_name: sg.emergency_contact_name.trim(), emergency_contact_phone: sg.emergency_contact_phone.trim(),
+      status: 'Pending', role: 'Guest', created_at: nowLocal() });
+    inv.status = 'Accepted';
+    return ok({ ok: true, message: "Thanks! The facility owner will review your membership. You'll get an email when it's approved.", final: true });
+  }
+  inv.status = 'Accepted';
+  return ok({ ok: true, message: "You're in! " + bk.first_name + ' can see you on the booking.', final: true });
+}
+
+// Sample invitations on Alex's pending booking (Jamie is a member; taylor@example.com is not).
+(function seedInvites() {
+  const b = bookings.filter(function (x) { return x.booker === 'M0002' && x.status === 'Pending'; })[0];
+  if (!b) return;
+  [['M0008', 'taylor@example.com'], ['M0003', 'jamie@example.com']].forEach(function (e) {
+    const p = b.players.filter(function (x) { return x.member_id === e[0]; })[0];
+    seqI++;
+    const inv = { invite_id: 'I' + ('00000' + seqI).slice(-5), email: e[1], member_id: e[0], booker: 'M0002', booking_ids: [b.booking_id], share_ids: [p.share_id], status: 'Invited', resent_count: 0, sent_at: Date.now() - 13 * 3600 * 1000 };
+    p.invite_id = inv.invite_id;
+    invites.push(inv);
+    try { console.info('[demo] Sample invitation for ' + e[1] + ': ' + location.origin + location.pathname + location.search + '#/go?t=demo-invite-' + inv.invite_id); } catch (err2) { /* no console */ }
+  });
+})();
