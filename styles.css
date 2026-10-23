@@ -103,7 +103,7 @@ main { max-width: 720px; margin: 0 auto; padding: 8px 16px 40px; padding-left: m
 
 .field { margin-bottom: 12px; }
 .field label { display: block; font-weight: 500; font-size: 0.9rem; margin-bottom: 4px; }
-input[type=text], input[type=email], input[type=tel], select, textarea {
+input[type=text], input[type=email], input[type=tel], input[type=search], select, textarea {
   width: 100%; min-height: 44px; padding: 8px 12px; font: 400 1rem var(--body); color: var(--fg);
   background: var(--surface); border: 1px solid var(--line); border-radius: 10px; -webkit-appearance: none; appearance: none;
 }

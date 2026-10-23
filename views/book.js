@@ -520,6 +520,8 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
   const guests = []; // { member_id, first_name, last_name } for a known player, or { email } for an email invite
   let payMode = 'Split';
   let known = [];
+  let knownQuery = ''; // the "Find a player" search text, kept across redraws
+  const KNOWN_SHOWN = 6;
 
   const summary = h('div', { class: 'summary' }, h('ul', { class: 'sessions' }, merged.map(function (s) {
     return h('li', null, h('strong', { text: resName(s.resource_id) }),
@@ -557,14 +559,30 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
     const atMax = guests.length + 1 >= maxPlayers;
     const avail = known.filter(function (k) { return !guests.some(function (g) { return g.member_id === k.member_id; }) && k.member_id !== me.member.member_id; });
     if (avail.length) {
+      // The engine sends known players most recent first: show the first few, and search the rest by name.
       const chips = h('div', { class: 'chips' });
-      avail.forEach(function (k) {
-        chips.append(h('button', {
-          class: 'chip', type: 'button', disabled: atMax, 'aria-label': 'Add ' + fullName(k),
-          onclick: function () { guests.push({ member_id: k.member_id, first_name: k.first_name, last_name: k.last_name }); refresh(); },
-        }, icon('plus', 14), fullName(k)));
-      });
-      knownSlot.append(h('h3', { class: 'small-h', text: 'Known players' }), chips);
+      const paintChips = function (q) {
+        clear(chips);
+        const words = q.trim().toLowerCase().split(/s+/).filter(Boolean);
+        const hits = words.length
+          ? avail.filter(function (k) { const n = fullName(k).toLowerCase(); return words.every(function (w) { return n.indexOf(w) >= 0; }); })
+          : avail;
+        hits.slice(0, KNOWN_SHOWN).forEach(function (k) {
+          chips.append(h('button', {
+            class: 'chip', type: 'button', disabled: atMax, 'aria-label': 'Add ' + fullName(k),
+            onclick: function () { knownQuery = ''; guests.push({ member_id: k.member_id, first_name: k.first_name, last_name: k.last_name }); refresh(); },
+          }, icon('plus', 14), fullName(k)));
+        });
+        if (words.length && !hits.length) chips.append(h('p', { class: 'hint', text: 'No one by that name. You can invite them by email below.' }));
+      };
+      knownSlot.append(h('h3', { class: 'small-h', text: avail.length > KNOWN_SHOWN ? 'Known players (most recent)' : 'Known players' }));
+      if (avail.length > KNOWN_SHOWN) {
+        const find = h('input', { type: 'search', autocomplete: 'off', spellcheck: 'false', disabled: atMax, placeholder: 'Type a name', value: knownQuery });
+        find.addEventListener('input', function () { knownQuery = find.value; paintChips(knownQuery); });
+        knownSlot.append(field('Find a player', find));
+      }
+      knownSlot.append(chips);
+      paintChips(knownQuery);
     }
     const email = h('input', { type: 'email', inputmode: 'email', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', disabled: atMax, placeholder: 'name@example.com' });
     const slot = h('div', { 'aria-live': 'polite' });

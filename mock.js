@@ -954,6 +954,7 @@ function knownPlayers(v) {
     b.players.forEach(function (p) { if (p.member_id !== v.member_id && isAccepted(p)) ids[p.member_id] = true; });
   });
   (played[v.member_id] || []).forEach(function (id) { ids[id] = true; });
+  if (v.role === 'Owner') members.forEach(function (m) { if (m.member_id !== v.member_id) ids[m.member_id] = true; }); // demo: enough names to search
   return ok(Object.keys(ids).map(memById).filter(function (m) { return m && m.status === 'Active'; })
     .map(function (m) { return { member_id: m.member_id, first_name: m.first_name, last_name: m.last_name }; }));
 }
