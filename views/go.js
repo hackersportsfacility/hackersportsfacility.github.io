@@ -86,6 +86,10 @@ export async function renderGo(root, ctx) {
         'Every payment for this booking is returned to the player as a facility credit, good for 12 months.'],
       keep: ['Keep the charges', 'Saving…', 'Done. The charges stand.', 'primary',
         'The charges for this late cancellation stay as they are.'],
+      bump: ['Bump this booking', 'Bumping…', 'Done. The booking was cancelled and the players have been emailed.', 'danger',
+        'Cancels the member’s booking for free. Anything they paid comes back as for any cancellation by the facility, and the players are emailed. Then your repeating entry takes the court.'],
+      skip: ['Skip this date', 'Skipping…', 'Done. This date is skipped.', 'primary',
+        'The member’s booking stays as it is and this date is left out of your repeating entry.'],
     };
     const v = V[i.d] || V.approve;
     const errSlot = h('div', { 'aria-live': 'polite' });

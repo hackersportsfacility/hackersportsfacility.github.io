@@ -1,6 +1,6 @@
 // In-memory fake of the booking engine (docs/phase1-api-contract.md). Demo mode only.
 // Sign in with any email (alex@example.com = member (slot limit 1), priya@example.com = member (slot limit 3), jordan@example.com = family, anything else = owner). Code: 123456.
-import { pad, ymdOf, hoursUntil, todayYmd, addDays, nowLocal, mondayOf, parseLocal, dowName, monthName, dayNum, timeRange, fmtRange } from './util.js';
+import { pad, ymdOf, hoursUntil, todayYmd, addDays, nowLocal, mondayOf, parseLocal, dowName, dowOf, monthName, dayNum, timeRange, fmtRange } from './util.js';
 
 const FACILITY = 'Hacker Sports Facility';
 const SETTINGS = { open_hour: 6, close_hour: 22, block_hours: 2, max_players_per_court: 4, free_cancel_hours: 24 };
@@ -241,8 +241,13 @@ function detail(b, v, withContact) {
       return o;
     }),
     late_cancel: /LATE_CANCEL/.test(b.notes),
-    can_cancel: active(b) && b.start > nowLocal() && !!v && (b.booker === v.member_id || !!owner),
+    can_cancel: !isBlock(b) && active(b) && b.start > nowLocal() && !!v && (b.booker === v.member_id || !!owner),
   };
+  if (isBlock(b)) {
+    out.is_block = true;
+    if (owner) { out.block_reason = blockReason(b); out.can_remove_block = active(b) && b.end > nowLocal(); }
+  }
+  if (owner && seriesOf(b)) out.series_id = seriesOf(b);
   if (owner) { out.late_reason = b.late_reason || ''; out.cancelled_at = b.cancelled_at || ''; }
   if (withContact) { out.booker.email = bk.email; out.booker.phone = bk.phone; out.booker_email = bk.email; out.booker_phone = bk.phone; }
   return out;
@@ -338,6 +343,8 @@ export const DEMO_LINKS = [
   ['demo-booking-reject', 'Booking request: reject'],
   ['demo-latecancel-credit', 'Late cancellation: waive as credit'],
   ['demo-latecancel-keep', 'Late cancellation: keep the charges'],
+  ['demo-clash-bump', 'Repeating block clash: bump the booking'],
+  ['demo-clash-skip', 'Repeating block clash: skip this date'],
   ['demo-member-approve', 'New member: approve'],
   ['demo-member-reject', 'New member: reject'],
   ['demo-guardian-sign', 'Parent or guardian: sign'],
@@ -348,7 +355,7 @@ export const DEMO_LINKS = [
 ];
 const linkDone = {};
 function linkParts(t) {
-  const m = /^demo-(booking|member|guardian|latecancel)-(approve_waive|approve|reject|sign|credit|keep)$/.exec(String(t || ''));
+  const m = /^demo-(booking|member|guardian|latecancel|clash)-(approve_waive|approve|reject|sign|credit|keep|bump|skip)$/.exec(String(t || ''));
   return m ? { kind: m[1], d: m[2] } : null;
 }
 function linkInfo(r) {
@@ -370,6 +377,20 @@ function linkInfo(r) {
         { label: 'Players', value: b.players.map(function (x) { const m = memById(x.member_id); return m.first_name + ' ' + m.last_name; }).join(', ') },
         { label: 'Price', value: '$' + b.total_amount.toFixed(2) },
       ],
+    }));
+  }
+  if (p.kind === 'clash') {
+    const c = CLASHES.filter(function (x) { return x.status === 'Open'; })[0];
+    if (linkDone[t] || !c) return ok(Object.assign(base, { state: 'already', summary: 'This clash was already decided. Nothing was changed.', details: [] }));
+    const o = clashOut(c), day = o.date;
+    const when = dowName(day) + ' ' + monthName(day) + ' ' + dayNum(day) + ', ' + timeRange(o.start, o.end, true);
+    const who = o.bookings.map(function (b) { return b.booker_name + ' (' + b.status + ')'; }).join(', ');
+    return ok(Object.assign(base, {
+      state: 'ready',
+      button: p.d === 'bump' ? 'Bump this booking' : 'Skip this date',
+      note: p.d === 'bump' ? "Cancels the member's booking for free. Anything they paid comes back as for any cancellation by the facility, and the players are emailed. Then your repeating entry takes the court." : "The member's booking stays as it is and this date is left out of your repeating entry.",
+      summary: (p.d === 'bump' ? 'Bump ' + (o.bookings[0] ? o.bookings[0].booker_name + "'s booking" : 'the booking') : 'Skip this date for the repeating ' + o.kind) + ' (' + o.resource_name + ', ' + when + ')?',
+      details: [['Repeating', o.kind === 'block' ? 'Block' + (o.reason ? ': ' + o.reason : '') : 'Your booking'], ['Court', o.resource_name], ['When', when], ['Booked by', who]],
     }));
   }
   if (p.kind === 'latecancel') {
@@ -411,6 +432,12 @@ function linkConfirm(r) {
   }
   linkDone[t] = true;
   const approve = info.d === 'approve' || info.d === 'approve_waive';
+  if (info.kind === 'clash') {
+    const c = CLASHES.filter(function (x) { return x.status === 'Open'; })[0];
+    const e = decideClashImpl(c, info.d, memById('M0001'));
+    if (e) return e;
+    return ok({ ok: true, message: info.d === 'bump' ? 'Done. The booking was cancelled and the players have been emailed. Your repeating entry has the court.' : "Done. This date is skipped and the member's booking stays.", final: true });
+  }
   if (info.kind === 'latecancel') {
     const lb = lateWaiting()[0];
     const e = decideLate(lb, info.d);
@@ -677,21 +704,29 @@ function availability(r, v) {
     const date = addDays(from, i), blocks = [];
     if (!priv && date > last) break; // members never see past their window
     for (let h = SETTINGS.open_hour; h + SETTINGS.block_hours <= SETTINGS.close_hour; h += SETTINGS.block_hours) {
-      const start = date + 'T' + pad(h) + ':00', end = endOf(start), slots = {};
+      const start = date + 'T' + pad(h) + ':00', end = endOf(start), slots = {}, reasons = {};
       visible.forEach(function (res) {
         let st = 'free';
         if (start <= nowS) st = 'past';
         else {
+          let blockedBy = null;
           bookings.forEach(function (b) {
             if (!active(b) || !conflicts(b.resource_id, res.resource_id) || !overlaps(b, { start: start, end: end })) return;
-            const mineB = b.resource_id === res.resource_id && (b.booker === v.member_id || b.players.some(function (p) { return p.member_id === v.member_id; }));
+            const mineB = !isBlock(b) && b.resource_id === res.resource_id && (b.booker === v.member_id || b.players.some(function (p) { return p.member_id === v.member_id; }));
             if (mineB) st = 'mine';
+            else if (isBlock(b)) blockedBy = b;
             else if (st !== 'mine') st = 'busy';
           });
+          if (st !== 'mine' && blockedBy) {
+            st = v.role === 'Owner' ? 'blocked' : 'unavailable';
+            if (v.role === 'Owner') reasons[res.resource_id] = blockReason(blockedBy);
+          }
         }
         slots[res.resource_id] = st;
       });
-      blocks.push({ start: start, end: end, slots: slots });
+      const cell = { start: start, end: end, slots: slots };
+      if (Object.keys(reasons).length) cell.reasons = reasons;
+      blocks.push(cell);
     }
     days.push({ date: date, blocks: blocks });
   }
@@ -1038,6 +1073,8 @@ function ownerAction(a, r, v) {
         bookings_this_week: bookings.filter(function (b) { const d = b.start.slice(0, 10); return active(b) && d >= ws && d <= we; }).length,
       },
       late_cancellations: lateWaiting().map(function (b) { return detail(b, v, true); }),
+      series: (fillSeries(), SERIES.filter(function (x) { return x.status === 'Active' && (!x.end_date || x.end_date >= t); }).map(seriesOut)),
+      clashes: CLASHES.filter(function (c) { return c.status === 'Open'; }).map(clashOut),
       owed: members.map(function (m) {
         const o = owedBlock(m.member_id, true);
         return o.amount > 0 ? { member_id: m.member_id, name: m.first_name + ' ' + m.last_name, email: m.email, amount: o.amount, items: o.items } : null;
@@ -1111,16 +1148,184 @@ function ownerAction(a, r, v) {
   }
   if (a === 'ownerBlockTime') {
     const res = resById(r.resource_id);
-    if (!res || !r.start) return err('BAD_REQUEST', 'Pick a court, day and time.');
-    if (!isOnGrid(r.start) || r.start <= nowLocal()) return err('OUT_OF_WINDOW', 'That time is outside the booking blocks.');
-    const end = endOf(r.start);
-    if (bookings.some(function (b) { return active(b) && conflicts(b.resource_id, res.resource_id) && overlaps(b, { start: r.start, end: end }); })) {
-      return err('SLOT_TAKEN', 'Something is already booked at that time.');
-    }
-    const b = addBooking({ resource_id: res.resource_id, start: r.start, status: 'Approved', booker: v.member_id, guests: [], notes: r.note || 'BLOCK' });
+    const day = String(r.start || r.date || '').slice(0, 10);
+    if (!res || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return err('BAD_REQUEST', 'Pick a court, day and time.');
+    const whole = r.whole_day === true;
+    if (!whole && !/^d{4}-d{2}-d{2}Td{2}:d{2}$/.test(String(r.start || ''))) return err('BAD_REQUEST', 'Pick a court, day and time.');
+    const start = whole ? day + 'T' + pad(SETTINGS.open_hour) + ':00' : r.start;
+    const slots = Math.max(1, Math.floor(Number(r.slots) || 1));
+    const end = whole ? day + 'T' + pad(SETTINGS.close_hour) + ':00' : rangeEnd(day, start.slice(11, 16), slots, res.block_hours);
+    if (!whole && !fitsGrid(start, end)) return err('OUT_OF_WINDOW', 'That time is outside the booking schedule.');
+    if (end <= nowLocal()) return err('OUT_OF_WINDOW', 'That time has already passed.');
+    const hit = bookings.filter(function (b) { return active(b) && conflicts(b.resource_id, res.resource_id) && overlaps(b, { start: start, end: end }); })[0];
+    if (hit) return err('SLOT_TAKEN', 'Something is already booked in that time: ' + resById(hit.resource_id).name + ', ' + dowName(hit.start) + ' ' + monthName(hit.start) + ' ' + dayNum(hit.start) + ' ' + timeRange(hit.start, hit.end, true) + '.');
+    const reason = String(r.reason || r.note || '').trim().slice(0, 120);
+    const b = addBlock(res, start, end, 'BLOCK' + (reason ? ': ' + reason : ''));
     return ok({ booking: detail(b, v) });
   }
+  if (a === 'ownerRemoveBlock') {
+    const b = bookings.filter(function (x) { return x.booking_id === r.booking_id; })[0];
+    if (!b) return err('NOT_FOUND', 'We could not find that booking.');
+    if (!isBlock(b)) return err('BAD_REQUEST', 'That is not a block. Use Cancel booking instead.');
+    if (!active(b)) return err('BAD_REQUEST', 'This block is already ' + b.status.toLowerCase() + '.');
+    b.status = 'Cancelled';
+    b.cancelled_at = nowLocal();
+    return ok({ booking: detail(b, v) });
+  }
+  if (a === 'ownerCreateSeries') return createSeriesImpl(r);
+  if (a === 'ownerStopSeries') {
+    const sr = SERIES.filter(function (x) { return x.series_id === r.series_id; })[0];
+    if (!sr) return err('NOT_FOUND', 'That repeating entry could not be found.');
+    if (sr.status === 'Stopped') return err('BAD_REQUEST', 'That repeating entry is already stopped.');
+    sr.status = 'Stopped';
+    let removed = 0;
+    bookings.forEach(function (b) {
+      if (seriesOf(b) === sr.series_id && active(b) && b.start > nowLocal()) { b.status = 'Cancelled'; b.cancelled_at = nowLocal(); removed++; }
+    });
+    CLASHES.forEach(function (c) { if (c.series_id === sr.series_id && c.status === 'Open') c.status = 'Expired'; });
+    return ok({ series: seriesOut(sr), removed: removed });
+  }
+  if (a === 'ownerDecideClash') {
+    const c = CLASHES.filter(function (x) { return x.clash_id === r.clash_id; })[0];
+    if (!c) return err('NOT_FOUND', 'That clash could not be found.');
+    if (c.status !== 'Open') return err('BAD_REQUEST', 'That clash was already decided.');
+    const e = decideClashImpl(c, r.decision, v);
+    if (e) return e;
+    return ok({ clash: clashOut(c) });
+  }
   return err('BAD_REQUEST', 'Unknown action: ' + a);
+}
+
+// ---- owner blocks and repeating entries ----
+// SERIES rows: { series_id, kind, resource_id, weekdays: ['Mon'], start_time, slots, start_date, end_date, reason, status, skipped: [] }
+const SERIES = [];
+const CLASHES = [];
+let seqR = 0, seqX = 0;
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const OWNER_ID = 'M0001';
+function isBlock(b) { return /^BLOCK/.test(b.notes || ''); }
+function blockReason(b) { return String(b.notes || '').replace(/^BLOCK/, '').replace(/SERIES:R\d+/g, ' ').replace(/^\s*:\s*/, '').replace(/\s+/g, ' ').trim(); }
+function seriesOf(b) { const m = /SERIES:(R\d+)/.exec(b.notes || ''); return m ? m[1] : ''; }
+function bookingById(id) { return bookings.filter(function (b) { return b.booking_id === id; })[0]; }
+function rangeEnd(day, hhmm, slots, blockHours) {
+  const mins = Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5)) + slots * blockHours * 60;
+  return day + 'T' + pad(Math.floor(mins / 60)) + ':' + pad(mins % 60);
+}
+function fitsGrid(start, end) {
+  const a = parseLocal(start), b = parseLocal(end);
+  const whole = a.h === SETTINGS.open_hour && a.mi === 0 && b.h === SETTINGS.close_hour && b.mi === 0;
+  return end.slice(0, 10) === start.slice(0, 10) && b.h * 60 + b.mi <= SETTINGS.close_hour * 60 && (whole || isOnGrid(start));
+}
+function addBlock(res, start, end, notes) {
+  const b = addBooking({ resource_id: res.resource_id, start: start, end: end, status: 'Approved', booker: OWNER_ID, guests: [], pay_mode: 'BookerPays', notes: notes });
+  return b;
+}
+function occurrenceNotes(sr) {
+  if (sr.kind === 'block') return 'BLOCK' + (sr.reason ? ': ' + sr.reason : '') + ' SERIES:' + sr.series_id;
+  return (sr.reason ? sr.reason + ' ' : '') + 'SERIES:' + sr.series_id;
+}
+function seriesOut(sr) {
+  const res = resById(sr.resource_id);
+  const end = rangeEnd(sr.start_date, sr.start_time, sr.slots, res.block_hours);
+  return {
+    series_id: sr.series_id, kind: sr.kind, resource_id: sr.resource_id, resource_name: res.name, weekdays: sr.weekdays.slice(),
+    start_time: sr.start_time, end_time: end.slice(11, 16), slots: sr.slots,
+    whole_day: Number(sr.start_time.slice(0, 2)) === SETTINGS.open_hour && Number(end.slice(11, 13)) === SETTINGS.close_hour,
+    start_date: sr.start_date, end_date: sr.end_date, reason: sr.reason, status: sr.status,
+  };
+}
+function clashOut(c) {
+  const sr = SERIES.filter(function (x) { return x.series_id === c.series_id; })[0];
+  const res = resById(sr.resource_id);
+  return {
+    clash_id: c.clash_id, series_id: c.series_id, kind: sr.kind, reason: sr.reason, resource_id: sr.resource_id, resource_name: res.name,
+    date: c.date, start: c.start, end: c.end, status: c.status,
+    bookings: c.booking_ids.map(bookingById).filter(Boolean).map(function (b) {
+      const bm = memById(b.booker);
+      return { booking_id: b.booking_id, status: b.status, booker_name: bm.first_name + ' ' + bm.last_name, resource_name: resById(b.resource_id).name, start: b.start, end: b.end };
+    }),
+  };
+}
+// Makes the next 28 days of occurrences and records clashes, like the engine's Rec.fill.
+function fillSeries() {
+  const today = todayYmd(), nowS = nowLocal(), last = addDays(today, 28);
+  let created = 0, clashes = 0;
+  SERIES.filter(function (sr) { return sr.status === 'Active'; }).forEach(function (sr) {
+    if (sr.end_date && sr.end_date < today) { sr.status = 'Stopped'; return; }
+    CLASHES.filter(function (c) { return c.series_id === sr.series_id && c.status === 'Open'; }).forEach(function (c) {
+      const live = c.booking_ids.map(bookingById).filter(function (b) { return b && active(b); });
+      if (!live.length) c.status = 'Expired';
+      else if (live.some(function (b) { return b.start <= nowS; })) { c.status = 'Expired'; sr.skipped.push(c.date); }
+    });
+    const res = resById(sr.resource_id);
+    for (let d = sr.start_date > today ? sr.start_date : today; d <= last && (!sr.end_date || d <= sr.end_date); d = addDays(d, 1)) {
+      if (sr.weekdays.indexOf(DAY_NAMES[dowOf(d)]) < 0 || sr.skipped.indexOf(d) >= 0) continue;
+      if (bookings.some(function (b) { return seriesOf(b) === sr.series_id && b.start.slice(0, 10) === d; })) continue;
+      const start = d + 'T' + sr.start_time, end = rangeEnd(d, sr.start_time, sr.slots, res.block_hours);
+      if (sr.kind === 'block' ? end <= nowS : start <= nowS) continue;
+      const hits = bookings.filter(function (b) { return active(b) && conflicts(b.resource_id, res.resource_id) && overlaps(b, { start: start, end: end }); });
+      if (hits.some(function (b) { return b.booker === OWNER_ID || isBlock(b); })) continue; // the owner's own booking or block: skipped silently
+      if (!hits.length) { addBlock(res, start, end, occurrenceNotes(sr)); created++; continue; }
+      if (CLASHES.some(function (c) { return c.series_id === sr.series_id && c.date === d && c.status === 'Open'; })) continue;
+      seqX++;
+      CLASHES.push({ clash_id: 'X' + ('00000' + seqX).slice(-5), series_id: sr.series_id, date: d, start: start, end: end, booking_ids: hits.map(function (b) { return b.booking_id; }), status: 'Open' });
+      clashes++;
+    }
+  });
+  return { created: created, clashes: clashes };
+}
+function seedSeries() {
+  const day = addDays(todayYmd(), 3);
+  seqR++;
+  SERIES.push({ series_id: 'R0001', kind: 'block', resource_id: 'COURT1', weekdays: [DAY_NAMES[dowOf(day)]], start_time: '10:00', slots: 1, start_date: todayYmd(), end_date: '', reason: 'Floor care', status: 'Active', skipped: [] });
+  fillSeries();
+}
+function createSeriesImpl(r) {
+  const res = resById(r.resource_id);
+  if (r.kind !== 'block' && r.kind !== 'booking') return err('BAD_REQUEST', 'kind must be block or booking.');
+  if (!res) return err('BAD_REQUEST', 'Unknown court.');
+  const wd = (Array.isArray(r.weekdays) ? r.weekdays : String(r.weekdays || '').split(',')).map(function (x) { return String(x).trim().slice(0, 3); })
+    .filter(function (x, i, arr) { return DAY_NAMES.indexOf(x) >= 0 && arr.indexOf(x) === i; });
+  if (!wd.length) return err('BAD_REQUEST', 'Pick at least one weekday.');
+  const startDay = String(r.start_date || ''), endDay = String(r.end_date || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDay)) return err('BAD_REQUEST', 'Please pick a start date.');
+  if (startDay < todayYmd()) return err('BAD_REQUEST', 'The start date must be today or later.');
+  if (endDay && !/^\d{4}-\d{2}-\d{2}$/.test(endDay)) return err('BAD_REQUEST', 'The end date does not look right.');
+  if (endDay && endDay < startDay) return err('BAD_REQUEST', 'The end date must be on or after the start date.');
+  let startTime, slots;
+  if (r.whole_day === true) {
+    startTime = pad(SETTINGS.open_hour) + ':00';
+    slots = Math.max(1, Math.floor((SETTINGS.close_hour - SETTINGS.open_hour) / res.block_hours));
+  } else {
+    startTime = String(r.start_time || '');
+    slots = Math.max(1, Math.floor(Number(r.slots) || 1));
+    if (!/^\d{2}:\d{2}$/.test(startTime)) return err('BAD_REQUEST', 'start_time must look like 08:00.');
+    if (!fitsGrid(startDay + 'T' + startTime, rangeEnd(startDay, startTime, slots, res.block_hours))) return err('OUT_OF_WINDOW', 'That time is outside the booking schedule.');
+  }
+  let any = false;
+  for (let i = 0; i < 7; i++) { const d = addDays(startDay, i); if ((!endDay || d <= endDay) && wd.indexOf(DAY_NAMES[dowOf(d)]) >= 0) any = true; }
+  if (!any) return err('BAD_REQUEST', 'None of those weekdays falls between the start and end dates.');
+  const reason = String(r.reason || r.note || '').trim().slice(0, 120).replace(/^BLOCK/, 'Block').replace(/SERIES:/g, 'Series ');
+  seqR++;
+  const sr = { series_id: 'R' + ('0000' + seqR).slice(-4), kind: r.kind, resource_id: res.resource_id, weekdays: wd, start_time: startTime, slots: slots, start_date: startDay, end_date: endDay, reason: reason, status: 'Active', skipped: [] };
+  SERIES.push(sr);
+  const filled = fillSeries();
+  return ok({ series: seriesOut(sr), created: filled.created, clashes: filled.clashes });
+}
+// Returns an error response, or null when the decision was made.
+function decideClashImpl(c, decision, v) {
+  const sr = SERIES.filter(function (x) { return x.series_id === c.series_id; })[0];
+  if (decision !== 'bump' && decision !== 'skip') return err('BAD_REQUEST', 'decision must be bump or skip.');
+  if (decision === 'skip') { sr.skipped.push(c.date); c.status = 'Skipped'; return null; }
+  const res = resById(sr.resource_id);
+  const live = c.booking_ids.map(bookingById).filter(function (b) { return b && active(b); });
+  for (let i = 0; i < live.length; i++) {
+    const e = cancelBooking({ booking_id: live[i].booking_id, reason: 'The facility needs the court at this time.' }, v);
+    if (!e.ok) return e;
+  }
+  if (!bookings.some(function (b) { return seriesOf(b) === sr.series_id && b.start.slice(0, 10) === c.date; })) addBlock(res, c.start, c.end, occurrenceNotes(sr));
+  c.status = 'Bumped';
+  return null;
 }
 
 // ---- guest invitations (Phase 2C-2) ----
@@ -1263,3 +1468,6 @@ function inviteConfirm(r, t) {
     try { console.info('[demo] Sample invitation for ' + e[1] + ': ' + location.origin + location.pathname + location.search + '#/go?t=demo-invite-' + inv.invite_id); } catch (err2) { /* no console */ }
   });
 })();
+
+// Repeating owner entries: Court 1 blocked at 10 AM on the weekday of Alex's pending booking, so one clash is waiting for a decision.
+seedSeries();

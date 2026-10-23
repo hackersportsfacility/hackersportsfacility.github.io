@@ -1,6 +1,6 @@
 import { call, clearCache } from '../api.js';
 import { h, add, icon, clear, parseLocal, todayYmd, addDays, dowName, monthName, dayNum, mondayOf, fmtDay, timeRange, fmtRange, money, isEmail, fullName, termsLink, hashParams, clearHashParams } from '../util.js';
-import { banner, skeleton, field, setBusy, openSheet, startCardFlow, owedCard, owedAmount } from '../ui.js';
+import { banner, skeleton, field, setBusy, openSheet, startCardFlow, owedCard, owedAmount, weekdayPicker, endPicker } from '../ui.js';
 import { waiverOf } from './waiver.js';
 
 const GOLF = 'GOLF';
@@ -46,6 +46,8 @@ function hoursBetween(start, end) {
   const a = parseLocal(start), b = parseLocal(end);
   return ((b.h * 60 + b.mi) - (a.h * 60 + a.mi)) / 60;
 }
+
+function isOwnerNow(me) { return !!me && !!me.member && (me.member.is_owner === true || me.member.role === 'Owner'); }
 
 function shortDay(ymd) { return dowName(ymd) + ' ' + monthName(ymd) + ' ' + dayNum(ymd); }
 
@@ -294,7 +296,7 @@ export async function renderBook(root, ctx) {
       cols.forEach(function (r) { row.append(slotCell(b, r.resource_id)); });
       grid.append(row);
     });
-    gridSlot.append(grid, legend());
+    gridSlot.append(grid, legend(day));
     if (focusPk) {
       const el = gridSlot.querySelector('[data-pk="' + focusPk + '"]');
       if (el && el.focus) { try { el.focus({ preventScroll: true }); } catch (e) { /* ignore */ } }
@@ -318,13 +320,24 @@ export async function renderBook(root, ctx) {
         h('i', { class: 'dot', 'aria-hidden': 'true' }), h('span', { text: 'Yours' }));
     }
     if (st === 'past') return h('span', { class: 'cell past', role: 'cell', 'aria-label': label + ', past' }, h('span', { text: 'Past' }));
+    // An owner block: members see Unavailable; the owner sees Blocked and why.
+    if (st === 'unavailable') return h('span', { class: 'cell busy', role: 'cell', 'aria-label': label + ', unavailable' }, h('span', { text: 'Unavailable' }));
+    if (st === 'blocked') {
+      const why = (b.reasons && b.reasons[key]) || '';
+      return h('span', { class: 'cell busy blocked', role: 'cell', title: 'Blocked' + (why ? ': ' + why : ''), 'aria-label': label + ', blocked' + (why ? ': ' + why : '') },
+        h('span', { text: 'Blocked' }), why ? h('span', { class: 'why', text: why }) : null);
+    }
     return h('span', { class: 'cell busy', role: 'cell', 'aria-label': label + ', booked' }, h('span', { text: 'Booked' }));
   }
 
-  function legend() {
+  function legend(day) {
+    const anyBlock = day.blocks.some(function (b) {
+      return Object.keys(b.slots || {}).some(function (k) { return b.slots[k] === 'unavailable' || b.slots[k] === 'blocked'; });
+    });
     return h('ul', { class: 'legend', 'aria-label': 'Key' },
       h('li', null, h('span', { class: 'swatch open' }), 'Open'),
       h('li', null, h('span', { class: 'swatch busy' }), 'Booked'),
+      anyBlock ? h('li', null, h('span', { class: 'swatch busy' }), isOwnerNow(me) ? 'Blocked' : 'Unavailable') : null,
       h('li', null, h('span', { class: 'swatch mine' }), 'Yours'),
       h('li', null, h('span', { class: 'swatch past' }), 'Past'));
   }
@@ -533,6 +546,8 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
     }
   });
 
+  // Owner only (Family never sees it): repeat one booking on chosen weekdays. Free, auto-approved, no invitations.
+  const canRepeat = isOwner && merged.length === 1;
   const sheet = openSheet(isOwner ? 'Book' : (multi ? 'Request bookings' : 'Request a booking'), hooks.onChanged);
   const body = sheet.body;
   const guests = []; // { member_id, first_name, last_name } for a known player, or { email } for an email invite
@@ -552,6 +567,29 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
   const errSlot = h('div');
   const actionSlot = h('div');
   const submit = h('button', { class: 'btn primary block', type: 'button', text: isOwner ? 'Book' : (multi ? 'Request bookings' : 'Request booking') });
+
+  let repeatOn = false;
+  const repeatSlot = h('div', { class: 'repeat-box' });
+  const guestWrap = h('div');
+  const repeatCb = canRepeat ? h('input', { type: 'checkbox', id: 'repeat-on' }) : null;
+  const repeatRow = canRepeat ? h('label', { class: 'check-row', for: 'repeat-on' }, repeatCb, h('span', { text: 'Repeat this booking' })) : null;
+  let weekdays = null, ends = null, repeatNote = null;
+  if (canRepeat) {
+    const first = merged[0].start.slice(0, 10);
+    weekdays = weekdayPicker([dowName(first)]);
+    ends = endPicker(first);
+    repeatNote = h('input', { type: 'text', maxlength: '120', autocomplete: 'off' });
+    repeatCb.addEventListener('change', function () {
+      repeatOn = repeatCb.checked;
+      clear(repeatSlot);
+      if (repeatOn) {
+        repeatSlot.append(weekdays.el, ends.el, field('Note (optional)', repeatNote),
+          h('p', { class: 'hint', text: 'Starts ' + shortDay(first) + ' at ' + timeRange(merged[0].start, merged[0].end, true) + '. The next 4 weeks are booked now and more are added as time goes on. It is free and needs no approval; no invitations are sent.' }));
+      }
+      guestWrap.hidden = repeatOn;
+      submit.textContent = repeatOn ? 'Repeat booking' : 'Book';
+    });
+  }
 
   const radios = [['Split', 'Everyone pays their share'], ['BookerPays', "I'll cover everyone"]].map(function (o, i) {
     const input = h('input', { type: 'radio', name: 'paymode', value: o[0], id: 'pm' + i, checked: o[0] === 'Split' });
@@ -650,9 +688,10 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
     h('p', { class: 'usage', text: usageMsg }),
     limitHit ? banner(limitMsg) : null,
     capErrors.map(function (m) { return banner(m); }),
-    h('h3', { class: 'small-h', text: 'Players' }), playersSlot, knownSlot,
-    priv ? null : h('fieldset', { class: 'paymode' }, h('legend', { text: 'Payment' }), h('div', { class: 'segs' }, radios)),
-    priceSlot,
+    repeatRow, repeatSlot,
+    add(guestWrap, h('h3', { class: 'small-h', text: 'Players' }), playersSlot, knownSlot,
+      priv ? null : h('fieldset', { class: 'paymode' }, h('legend', { text: 'Payment' }), h('div', { class: 'segs' }, radios)),
+      priceSlot),
     priv ? null : h('p', { class: 'hint', text: "Your card is charged about 24 hours before the booking. Players who don't pay are charged to you at the start time." }),
     errSlot,
     actionSlot);
@@ -692,6 +731,7 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
   if (limitHit || capErrors.length) submit.disabled = true;
   submit.addEventListener('click', async function () {
     clear(errSlot);
+    if (repeatOn) { await submitSeries(); return; }
     setBusy(submit, true, 'Sending…');
     const payload = guests.map(function (g) {
       return g.member_id ? { member_id: g.member_id } : { email: g.email };
@@ -713,6 +753,43 @@ function bookingSheet(ctx, resources, resName, sessions, hooks) {
       if (err.code === 'SLOT_TAKEN' || err.code === 'LIMIT_REACHED') hooks.onChanged();
     }
   });
+
+  async function submitSeries() {
+    const days = weekdays.value();
+    if (!days.length) { errSlot.append(banner('Pick at least one weekday.')); return; }
+    if (ends.missing()) { errSlot.append(banner('Pick the last date, or choose Until I stop it.')); ends.focusDate(); return; }
+    const s0 = merged[0], r0 = resList[0];
+    const bh = Number(r0.block_hours) || Number(settings.block_hours) || 2;
+    const req = {
+      kind: 'booking', resource_id: s0.resource_id, weekdays: days, start_time: s0.start.slice(11, 16),
+      slots: Math.max(1, Math.round(hoursBetween(s0.start, s0.end) / bh)), start_date: s0.start.slice(0, 10),
+    };
+    if (ends.value()) req.end_date = ends.value();
+    if (repeatNote.value.trim()) req.reason = repeatNote.value.trim();
+    setBusy(submit, true, 'Setting up…');
+    try {
+      const out = await call('ownerCreateSeries', req);
+      showSeriesDone(out);
+    } catch (err) {
+      errSlot.append(banner(err));
+      setBusy(submit, false);
+    }
+  }
+
+  function showSeriesDone(out) {
+    if (hooks.onBooked) hooks.onBooked();
+    const n = out.created || 0, c = out.clashes || 0;
+    clear(body);
+    sheet.setTitle('Repeating booking set up');
+    body.append(h('div', { class: 'done' },
+      h('div', { class: 'done-mark' }, icon('check', 28)),
+      h('p', { class: 'done-msg', text: 'Repeating booking set up' }),
+      h('p', { text: n + (n === 1 ? ' date is' : ' dates are') + ' booked so far.' }),
+      c ? h('p', { class: 'hint', text: c + (c === 1 ? ' date clashes' : ' dates clash') + " with a member's booking. Nothing was changed there; decide on the Owner screen." }) : null,
+      h('div', { class: 'btn-row' },
+        c ? h('a', { class: 'btn primary', href: '#/owner', onclick: function () { sheet.close(); }, text: 'Open Owner screen' }) : null,
+        h('button', { class: c ? 'btn' : 'btn primary', type: 'button', onclick: function () { sheet.close(); }, text: 'Done' }))));
+  }
 
   function showDone(list) {
     if (hooks.onBooked) hooks.onBooked();

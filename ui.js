@@ -181,3 +181,45 @@ export function openSheet(title, onClose) {
   sheet.focus();
   return { body: body, close: close, setTitle: function (t) { titleEl.textContent = t; } };
 }
+
+// ---- repeating entries (owner): weekday chips and the "ends" choice, shared by the Block time card and the booking sheet ----
+const WEEK_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+// Weekday check chips. defaults: names such as ['Mon']. value() returns the checked names, Monday first.
+export function weekdayPicker(defaults) {
+  const boxes = WEEK_NAMES.map(function (n) {
+    return h('input', { type: 'checkbox', value: n, checked: (defaults || []).indexOf(n) >= 0 });
+  });
+  const el = h('fieldset', { class: 'opt-group' }, h('legend', { text: 'Repeat on' }),
+    h('div', { class: 'weekdays' }, WEEK_NAMES.map(function (n, i) { return h('label', { class: 'seg' }, boxes[i], h('span', { text: n })); })));
+  return {
+    el: el,
+    set: function (names) { boxes.forEach(function (b) { b.checked = names.indexOf(b.value) >= 0; }); },
+    value: function () { return boxes.filter(function (b) { return b.checked; }).map(function (b) { return b.value; }); },
+  };
+}
+
+// "Until I stop it" or "Until a date". value() is '' (no end date) or 'YYYY-MM-DD'; missing() is true when a date is chosen but empty.
+export function endPicker(minYmd) {
+  const name = 'ends' + Math.random().toString(36).slice(2, 7);
+  const date = h('input', { type: 'date', min: minYmd });
+  const dateField = field('Last date', date);
+  dateField.hidden = true;
+  const open = h('input', { type: 'radio', name: name, value: 'open', checked: true });
+  const pick = h('input', { type: 'radio', name: name, value: 'date' });
+  const sync = function () { dateField.hidden = !pick.checked; };
+  open.addEventListener('change', sync);
+  pick.addEventListener('change', sync);
+  const el = h('fieldset', { class: 'opt-group' }, h('legend', { text: 'Ends' }),
+    h('div', { class: 'segs col' },
+      h('label', { class: 'seg' }, open, h('span', { text: 'Until I stop it' })),
+      h('label', { class: 'seg' }, pick, h('span', { text: 'On a date' }))),
+    dateField);
+  return {
+    el: el,
+    setMin: function (ymd) { date.min = ymd; },
+    value: function () { return pick.checked ? date.value : ''; },
+    missing: function () { return pick.checked && !date.value; },
+    focusDate: function () { date.focus(); },
+  };
+}

@@ -76,6 +76,7 @@ export async function renderBookings(root, ctx) {
     function paint(bk) {
       clear(card);
       clear(actions);
+      if (bk.is_block) { paintBlock(bk); return; }
       add(card,
         h('div', { class: 'bk-head' }, h('div', null, h('h2', { text: bk.resource_name }), h('p', { class: 'mono', text: fmtRange(bk.start, bk.end) })), pill(bk.status)),
         bk.late_cancel ? h('p', { class: 'hint warn-text', text: 'Cancelled within the free cancellation window.' }) : null,
@@ -96,6 +97,46 @@ export async function renderBookings(root, ctx) {
       if (bk.can_cancel) {
         actions.append(h('button', { class: 'btn danger-ghost', type: 'button', text: 'Cancel booking', onclick: function () { confirmCancel(bk); } }));
       }
+    }
+
+    // An owner block: "Blocked: reason" with Remove block (any time, even after it has started) and Release remaining time.
+    function paintBlock(bk) {
+      add(card,
+        h('div', { class: 'bk-head' }, h('div', null, h('h2', { text: 'Blocked' + (bk.block_reason ? ': ' + bk.block_reason : '') }),
+          h('p', { class: 'mono', text: bk.resource_name + ' · ' + fmtRange(bk.start, bk.end) })), pill(bk.status)),
+        bk.series_id ? h('p', { class: 'hint', text: 'Part of a repeating block.' }) : null,
+        errSlot, actions);
+      if (bk.can_release) {
+        actions.append(h('button', { class: 'btn danger-ghost', type: 'button', text: 'Release remaining time', onclick: function () { confirmRelease(bk); } }));
+      }
+      if (bk.can_remove_block) {
+        actions.append(h('button', { class: 'btn danger-ghost', type: 'button', text: 'Remove block', onclick: function () { confirmRemoveBlock(bk); } }));
+      }
+    }
+
+    function confirmRemoveBlock(bk) {
+      clear(actions);
+      clear(errSlot);
+      const yes = h('button', { class: 'btn danger', type: 'button', text: 'Yes, remove block' });
+      const panel = h('div', { class: 'confirm', role: 'alertdialog', 'aria-label': 'Confirm remove block' },
+        h('p', { text: 'Remove this block? The court opens up for booking right away.' }),
+        bk.series_id ? h('p', { class: 'hint', text: 'Only this date is removed. The repeating block carries on; stop it from the Owner screen.' }) : null,
+        h('div', { class: 'btn-row' }, yes, h('button', { class: 'btn', type: 'button', text: 'Keep block', onclick: function () { paint(bk); } })));
+      yes.addEventListener('click', async function () {
+        setBusy(yes, true, 'Removing…');
+        try {
+          const out = await call('ownerRemoveBlock', { booking_id: bk.booking_id });
+          if (ctx.stale()) return;
+          paint(out.booking);
+          errSlot.append(banner('Block removed.', 'info'));
+        } catch (e) {
+          clear(errSlot);
+          errSlot.append(banner(e));
+          setBusy(yes, false);
+        }
+      });
+      actions.append(panel);
+      yes.focus();
     }
 
     async function payNow(btn, p) {
