@@ -218,6 +218,7 @@ export function endPicker(minYmd) {
   return {
     el: el,
     setMin: function (ymd) { date.min = ymd; },
+    set: function (ymd) { if (ymd) { pick.checked = true; date.value = ymd; } else { open.checked = true; date.value = ''; } sync(); },
     value: function () { return pick.checked ? date.value : ''; },
     missing: function () { return pick.checked && !date.value; },
     focusDate: function () { date.focus(); },

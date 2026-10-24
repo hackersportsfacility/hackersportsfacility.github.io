@@ -1146,7 +1146,14 @@ function ownerAction(a, r, v) {
     return ok(members.filter(function (m) { return !r.status || m.status === r.status; })
       .map(function (m) { return Object.assign({}, m, { amount_owed: owedBlock(m.member_id).amount }); }));
   }
-  if (a === 'ownerBlockTime') {
+  if (a === 'ownerBlockTime' || a === 'ownerEditBlock') {
+    const old = a === 'ownerEditBlock' ? bookingById(r.booking_id) : null;
+    if (a === 'ownerEditBlock') {
+      if (!old) return err('NOT_FOUND', 'We could not find that booking.');
+      if (!isBlock(old)) return err('BAD_REQUEST', 'That is not a block.');
+      if (!active(old)) return err('BAD_REQUEST', 'This block is already ' + old.status.toLowerCase() + '.');
+      if (old.start <= nowLocal()) return err('FORBIDDEN', 'This block has started. Use Release remaining time or Remove block.');
+    }
     const res = resById(r.resource_id);
     const day = String(r.start || r.date || '').slice(0, 10);
     if (!res || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return err('BAD_REQUEST', 'Pick a court, day and time.');
@@ -1157,7 +1164,7 @@ function ownerAction(a, r, v) {
     const end = whole ? day + 'T' + pad(SETTINGS.close_hour) + ':00' : rangeEnd(day, start.slice(11, 16), slots, res.block_hours);
     if (!whole && !fitsGrid(start, end)) return err('OUT_OF_WINDOW', 'That time is outside the booking schedule.');
     if (end <= nowLocal()) return err('OUT_OF_WINDOW', 'That time has already passed.');
-    const hits = bookings.filter(function (b) { return active(b) && conflicts(b.resource_id, res.resource_id) && overlaps(b, { start: start, end: end }); });
+    const hits = bookings.filter(function (b) { return b !== old && active(b) && conflicts(b.resource_id, res.resource_id) && overlaps(b, { start: start, end: end }); });
     const label = function (x) { return resById(x.resource_id).name + ', ' + dowName(x.start) + ' ' + monthName(x.start) + ' ' + dayNum(x.start) + ' ' + timeRange(x.start, x.end, true); };
     if (hits.length && r.bump !== true) {
       return err('BLOCK_CLASH', 'Already booked in that time: ' + hits.map(function (x) {
@@ -1167,7 +1174,8 @@ function ownerAction(a, r, v) {
     }
     hits.forEach(function (x) { x.status = 'Cancelled'; x.cancelled_at = nowLocal(); }); // demo: bumped (owner cancellation)
     const reason = String(r.reason || r.note || '').trim().slice(0, 120);
-    const b = addBlock(res, start, end, 'BLOCK' + (reason ? ': ' + reason : ''));
+    if (old) { old.status = 'Cancelled'; old.cancelled_at = nowLocal(); }
+    const b = addBlock(res, start, end, 'BLOCK' + (reason ? ': ' + reason : '') + (old && seriesOf(old) ? ' SERIES:' + seriesOf(old) : ''));
     return ok({ booking: detail(b, v), bumped: hits.length });
   }
   if (a === 'ownerRemoveBlock') {
@@ -1180,6 +1188,7 @@ function ownerAction(a, r, v) {
     return ok({ booking: detail(b, v) });
   }
   if (a === 'ownerCreateSeries') return createSeriesImpl(r);
+  if (a === 'ownerEditSeries') return editSeriesImpl(r);
   if (a === 'ownerStopSeries') {
     const sr = SERIES.filter(function (x) { return x.series_id === r.series_id; })[0];
     if (!sr) return err('NOT_FOUND', 'That repeating entry could not be found.');
@@ -1315,6 +1324,54 @@ function createSeriesImpl(r) {
   const reason = String(r.reason || r.note || '').trim().slice(0, 120).replace(/^BLOCK/, 'Block').replace(/SERIES:/g, 'Series ');
   seqR++;
   const sr = { series_id: 'R' + ('0000' + seqR).slice(-4), kind: r.kind, resource_id: res.resource_id, weekdays: wd, start_time: startTime, slots: slots, start_date: startDay, end_date: endDay, reason: reason, status: 'Active', skipped: [] };
+  SERIES.push(sr);
+  const filled = fillSeries();
+  return ok({ series: seriesOut(sr), created: filled.created, clashes: filled.clashes });
+}
+// Splits a series at from_date like the engine's Rec.edit: the old one ends the day before, the not-yet-started dates from
+// then on are cancelled, and a new series with the new settings starts on from_date.
+function editSeriesImpl(r) {
+  const old = SERIES.filter(function (x) { return x.series_id === r.series_id; })[0];
+  if (!old) return err('NOT_FOUND', 'That repeating entry could not be found.');
+  const from = String(r.from_date || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) return err('BAD_REQUEST', 'Please pick the date the changes start on.');
+  if (from < todayYmd()) return err('BAD_REQUEST', 'The changes must start today or later.');
+  if (old.status === 'Stopped') return err('BAD_REQUEST', 'That repeating entry is stopped. Create a new one instead.');
+  if (old.end_date && old.end_date < from) return err('BAD_REQUEST', 'That repeating entry ends before that date.');
+  const res = resById(r.resource_id || old.resource_id);
+  if (!res) return err('BAD_REQUEST', 'Unknown court.');
+  const wd = (r.weekdays === undefined ? old.weekdays : (Array.isArray(r.weekdays) ? r.weekdays : String(r.weekdays || '').split(',')))
+    .map(function (x) { return String(x).trim().slice(0, 3); }).filter(function (x, i, arr) { return DAY_NAMES.indexOf(x) >= 0 && arr.indexOf(x) === i; });
+  if (!wd.length) return err('BAD_REQUEST', 'Pick at least one weekday.');
+  const endDay = r.end_date === undefined ? old.end_date : String(r.end_date || '');
+  if (endDay && endDay < from) return err('BAD_REQUEST', 'The end date must be on or after the start date.');
+  let startTime, slots;
+  if (r.whole_day === true) {
+    startTime = pad(SETTINGS.open_hour) + ':00';
+    slots = Math.max(1, Math.floor((SETTINGS.close_hour - SETTINGS.open_hour) / res.block_hours));
+  } else {
+    startTime = String(r.start_time || old.start_time);
+    slots = Math.max(1, Math.floor(Number(r.slots || old.slots) || 1));
+    if (!/^\d{2}:\d{2}$/.test(startTime)) return err('BAD_REQUEST', 'start_time must look like 08:00.');
+    if (!fitsGrid(from + 'T' + startTime, rangeEnd(from, startTime, slots, res.block_hours))) return err('OUT_OF_WINDOW', 'That time is outside the booking schedule.');
+  }
+  let any = false;
+  for (let i = 0; i < 7; i++) { const d = addDays(from, i); if ((!endDay || d <= endDay) && wd.indexOf(DAY_NAMES[dowOf(d)]) >= 0) any = true; }
+  if (!any) return err('BAD_REQUEST', 'None of those weekdays falls between the start and end dates.');
+  const reason = (r.reason === undefined ? old.reason : String(r.reason || '').trim().slice(0, 120)).replace(/^BLOCK/, 'Block').replace(/SERIES:/g, 'Series ');
+  const nowS = nowLocal(), keep = [];
+  bookings.forEach(function (b) {
+    if (seriesOf(b) !== old.series_id || !active(b) || b.start.slice(0, 10) < from) return;
+    if (b.start <= nowS) { keep.push(b.start.slice(0, 10)); return; } // already started: stays
+    b.status = 'Cancelled'; b.cancelled_at = nowS;
+  });
+  CLASHES.forEach(function (c) { if (c.series_id === old.series_id && c.status === 'Open' && c.date >= from) c.status = 'Expired'; });
+  const before = addDays(from, -1);
+  if (!old.end_date || old.end_date > before) old.end_date = before;
+  if (old.end_date < todayYmd()) old.status = 'Stopped';
+  seqR++;
+  const sr = { series_id: 'R' + ('0000' + seqR).slice(-4), kind: old.kind, resource_id: res.resource_id, weekdays: wd, start_time: startTime, slots: slots, start_date: from, end_date: endDay, reason: reason, status: 'Active',
+    skipped: old.skipped.filter(function (d) { return d >= from; }).concat(keep) };
   SERIES.push(sr);
   const filled = fillSeries();
   return ok({ series: seriesOut(sr), created: filled.created, clashes: filled.clashes });

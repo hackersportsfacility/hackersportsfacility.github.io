@@ -109,6 +109,10 @@ export async function renderBookings(root, ctx) {
       if (bk.can_release) {
         actions.append(h('button', { class: 'btn danger-ghost', type: 'button', text: 'Release remaining time', onclick: function () { confirmRelease(bk); } }));
       }
+      if (bk.can_remove_block && new Date(bk.start).getTime() > Date.now()) {
+        // Edit opens the Block time card on the Owner screen, filled in with this block.
+        actions.append(h('button', { class: 'btn', type: 'button', text: 'Edit', onclick: function () { state.editBlock = bk; location.hash = '#/owner'; } }));
+      }
       if (bk.can_remove_block) {
         actions.append(h('button', { class: 'btn danger-ghost', type: 'button', text: 'Remove block', onclick: function () { confirmRemoveBlock(bk); } }));
       }

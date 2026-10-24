@@ -20,6 +20,18 @@ export async function renderOwner(root, ctx) {
     });
   }
   dashSlot.append(skeleton(4, true));
+  // What the Block time card is editing: null (making a new one), { type: 'block', b: booking } or { type: 'series', sr: series }.
+  // My bookings sends a block here through ctx.state.editBlock.
+  let editing = ctx.state.editBlock ? { type: 'block', b: ctx.state.editBlock } : null;
+  delete ctx.state.editBlock;
+  async function startEdit(what) {
+    editing = what;
+    await loadBlock();
+    blockSlot.scrollIntoView({ block: 'start' });
+    const first = blockSlot.querySelector('select,input');
+    if (first) first.focus({ preventScroll: true });
+  }
+  const notStarted = function (b) { const t = new Date(b.start).getTime(); return !(t <= Date.now()); };
 
   async function loadDash() {
     let d;
@@ -242,6 +254,9 @@ export async function renderOwner(root, ctx) {
         clear(panelSlot); clear(actions);
         if (b.status !== 'Approved') return;
         if (b.is_block) {
+          if (b.can_remove_block !== false && notStarted(b)) {
+            actions.append(h('button', { class: 'btn', type: 'button', text: 'Edit', 'aria-label': 'Edit block on ' + b.resource_name + ' ' + fmtDay(b.start), onclick: function () { startEdit({ type: 'block', b: b }); } }));
+          }
           if (b.can_remove_block !== false) {
             actions.append(h('button', { class: 'btn danger-ghost', type: 'button', text: 'Remove block', 'aria-label': 'Remove block on ' + b.resource_name + ' ' + fmtDay(b.start), onclick: function () { open(removePanel); } }));
           }
@@ -341,7 +356,8 @@ export async function renderOwner(root, ctx) {
       const actions = h('div', { class: 'btn-row' });
       const showActions = function () {
         clear(panelSlot); clear(actions);
-        actions.append(h('button', { class: 'btn danger-ghost', type: 'button', text: 'Stop', 'aria-label': 'Stop repeating ' + kindWord(sr.kind) + ' on ' + sr.resource_name, onclick: open }));
+        actions.append(h('button', { class: 'btn', type: 'button', text: 'Edit', 'aria-label': 'Edit repeating ' + kindWord(sr.kind) + ' on ' + sr.resource_name, onclick: function () { startEdit({ type: 'series', sr: sr }); } }),
+          h('button', { class: 'btn danger-ghost', type: 'button', text: 'Stop', 'aria-label': 'Stop repeating ' + kindWord(sr.kind) + ' on ' + sr.resource_name, onclick: open }));
       };
       function open() {
         clear(panelSlot); clear(actions);
@@ -460,7 +476,8 @@ export async function renderOwner(root, ctx) {
   // One block (several slots or the whole day, with an optional reason), or a repeating one on chosen weekdays.
   async function loadBlock() {
     clear(blockSlot);
-    blockSlot.append(h('h2', { text: 'Block time' }));
+    const edB = editing && editing.type === 'block' ? editing.b : null, edS = editing && editing.type === 'series' ? editing.sr : null;
+    blockSlot.append(h('h2', { text: edB ? 'Edit block' : edS ? 'Edit repeating ' + kindWord(edS.kind) : 'Block time' }));
     let resources;
     try { resources = ctx.state.resources || (ctx.state.resources = await call('resources', {})); }
     catch (e) { blockSlot.append(banner(e)); return; }
@@ -471,7 +488,7 @@ export async function renderOwner(root, ctx) {
 
     const resSel = h('select', null, resources.map(function (r) { return h('option', { value: r.resource_id, text: r.name }); }));
     const dayInput = h('input', { type: 'date', min: today, value: today });
-    const dayField = field('Day', dayInput);
+    const dayField = field(edS ? 'Changes start on' : 'Day', dayInput);
     const dayLabel = dayField.querySelector('label');
     const timeSel = h('select');
     const lenSel = h('select');
@@ -488,6 +505,7 @@ export async function renderOwner(root, ctx) {
     repeatBox.hidden = true;
     const slot = h('div', { 'aria-live': 'polite' });
     const btn = h('button', { class: 'btn primary', type: 'button', text: 'Block time' });
+    const cancelEdit = h('button', { class: 'btn', type: 'button', text: 'Cancel editing', onclick: function () { editing = null; loadBlock(); } });
 
     function blockHours() {
       const r = resources.filter(function (x) { return x.resource_id === resSel.value; })[0];
@@ -520,8 +538,8 @@ export async function renderOwner(root, ctx) {
       timeField.hidden = whole;
       lenField.hidden = whole;
       repeatBox.hidden = !rep;
-      dayLabel.textContent = rep ? 'First date' : 'Day';
-      btn.textContent = rep ? 'Repeat block' : 'Block time';
+      dayLabel.textContent = edS ? 'Changes start on' : rep ? 'First date' : 'Day';
+      btn.textContent = editing ? 'Save changes' : rep ? 'Repeat block' : 'Block time';
       if (rep) ends.setMin(dayInput.value || today);
     }
     resSel.addEventListener('change', fillTimes);
@@ -529,10 +547,37 @@ export async function renderOwner(root, ctx) {
     wholeCb.addEventListener('change', sync);
     repeatCb.addEventListener('change', sync);
     dayInput.addEventListener('change', function () {
-      if (/^\d{4}-\d{2}-\d{2}$/.test(dayInput.value) && weekdays.value().length <= 1) weekdays.set([dowName(dayInput.value)]);
+      if (!editing && /^\d{4}-\d{2}-\d{2}$/.test(dayInput.value) && weekdays.value().length <= 1) weekdays.set([dowName(dayInput.value)]);
       sync();
     });
     fillTimes();
+    // Editing: fill the form in from the block or repeating entry.
+    const mins = function (hhmm) { return Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5)); };
+    function fillFrom(resId, startTime, endTime, whole, n) {
+      resSel.value = resId;
+      fillTimes();
+      wholeCb.checked = !!whole;
+      if (!whole) {
+        timeSel.value = startTime;
+        fillLengths();
+        lenSel.value = String(n || Math.max(1, Math.round((mins(endTime) - mins(startTime)) / Math.round(blockHours() * 60))));
+      }
+    }
+    if (edB) {
+      const sTime = edB.start.slice(11, 16), eTime = edB.end.slice(11, 16);
+      dayInput.value = edB.start.slice(0, 10);
+      dayInput.min = edB.start.slice(0, 10) < today ? edB.start.slice(0, 10) : today;
+      fillFrom(edB.resource_id, sTime, eTime, mins(sTime) === Math.round(open * 60) && mins(eTime) === Math.round(close * 60), 0);
+      reason.value = edB.block_reason || '';
+    } else if (edS) {
+      dayInput.value = today;
+      fillFrom(edS.resource_id, edS.start_time, edS.end_time, edS.whole_day, edS.slots);
+      weekdays.set(edS.weekdays || []);
+      ends.setMin(today);
+      ends.set(edS.end_date || '');
+      reason.value = edS.reason || '';
+      repeatCb.checked = true;
+    }
     sync();
 
     async function submit(bump) {
@@ -544,7 +589,14 @@ export async function renderOwner(root, ctx) {
       const whole = wholeCb.checked, rep = repeatCb.checked;
       const note = reason.value.trim();
       let call_, req;
-      if (rep) {
+      if (edS) {
+        const days = weekdays.value();
+        if (!days.length) { slot.append(banner('Pick at least one weekday.')); return; }
+        if (ends.missing()) { slot.append(banner('Pick the last date, or choose Until I stop it.')); ends.focusDate(); return; }
+        req = { series_id: edS.series_id, from_date: day, resource_id: resSel.value, weekdays: days, reason: note, end_date: ends.value() };
+        if (whole) req.whole_day = true; else { req.whole_day = false; req.start_time = timeSel.value; req.slots = Number(lenSel.value); }
+        call_ = 'ownerEditSeries';
+      } else if (rep) {
         const days = weekdays.value();
         if (!days.length) { slot.append(banner('Pick at least one weekday.')); return; }
         if (ends.missing()) { slot.append(banner('Pick the last date, or choose Until I stop it.')); ends.focusDate(); return; }
@@ -556,18 +608,23 @@ export async function renderOwner(root, ctx) {
         req = { resource_id: resSel.value, note: note || undefined };
         if (whole) { req.whole_day = true; req.date = day; } else { req.start = day + 'T' + timeSel.value; req.slots = Number(lenSel.value); }
         if (bump) req.bump = true;
-        call_ = 'ownerBlockTime';
+        if (edB) { req.booking_id = edB.booking_id; call_ = 'ownerEditBlock'; } else call_ = 'ownerBlockTime';
       }
-      setBusy(btn, true, rep ? 'Setting up…' : 'Blocking…');
+      setBusy(btn, true, editing ? 'Saving…' : rep ? 'Setting up…' : 'Blocking…');
       try {
         const out = await call(call_, req);
-        let msg = 'Time blocked.';
-        if (out && out.bumped) msg = 'Time blocked. ' + out.bumped + (out.bumped === 1 ? ' booking was' : ' bookings were') + ' cancelled to make room; anyone affected was emailed.';
-        if (rep) {
+        let msg = edB ? 'Block changed.' : 'Time blocked.';
+        if (out && out.bumped) msg = msg + ' ' + out.bumped + (out.bumped === 1 ? ' booking was' : ' bookings were') + ' cancelled to make room; anyone affected was emailed.';
+        if (edS) {
+          const n = out.created || 0, c = out.clashes || 0;
+          msg = 'Changes saved from ' + fmtDate(day) + '. ' + n + (n === 1 ? ' date is' : ' dates are') + ' set up so far.' +
+            (c ? ' ' + c + (c === 1 ? ' date clashes' : ' dates clash') + " with a member's booking; decide in the Clashes list." : '');
+        } else if (rep) {
           const n = out.created || 0, c = out.clashes || 0;
           msg = 'Repeating block set up. ' + n + (n === 1 ? ' date is' : ' dates are') + ' blocked so far.' +
             (c ? ' ' + c + (c === 1 ? ' date clashes' : ' dates clash') + " with a member's booking; decide in the Clashes list." : '');
         }
+        editing = null;
         await loadBlock();
         const note_ = banner(msg, 'info');
         note_.classList.add('block-done');
@@ -580,7 +637,7 @@ export async function renderOwner(root, ctx) {
           const yes = h('button', { class: 'btn danger', type: 'button', text: 'Bump and block' });
           const panel = h('div', { class: 'confirm', role: 'alertdialog', 'aria-label': 'Bump bookings' },
             h('p', { text: e.message }),
-            h('p', { class: 'hint', text: "Bump cancels what's there (free; anything paid is returned; players are told the facility needs the court) and then blocks the time." }),
+            h('p', { class: 'hint', text: "Bump cancels what's there (free; anything paid is returned; players are told the facility needs the court) and then " + (edB ? 'saves the change.' : 'blocks the time.') }),
             h('div', { class: 'btn-row' }, yes, h('button', { class: 'btn', type: 'button', text: 'Keep them', onclick: function () { clear(slot); } })));
           yes.addEventListener('click', function () { setBusy(yes, true, 'Bumping…'); submit(true); });
           slot.append(panel);
@@ -590,9 +647,9 @@ export async function renderOwner(root, ctx) {
       }
     }
     btn.addEventListener('click', function () { submit(false); });
-    blockSlot.append(
+    add(blockSlot,
       field('Court', resSel), dayField, wholeRow, h('div', { class: 'grid2' }, timeField, lenField),
-      field('Reason (optional)', reason), repeatRow, repeatBox, slot, btn);
+      field('Reason (optional)', reason), editing ? null : repeatRow, repeatBox, slot, btn, editing ? cancelEdit : null);
   }
 
   // ---- members ----
