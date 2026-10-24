@@ -1151,17 +1151,24 @@ function ownerAction(a, r, v) {
     const day = String(r.start || r.date || '').slice(0, 10);
     if (!res || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return err('BAD_REQUEST', 'Pick a court, day and time.');
     const whole = r.whole_day === true;
-    if (!whole && !/^d{4}-d{2}-d{2}Td{2}:d{2}$/.test(String(r.start || ''))) return err('BAD_REQUEST', 'Pick a court, day and time.');
+    if (!whole && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(String(r.start || ''))) return err('BAD_REQUEST', 'Pick a court, day and time.');
     const start = whole ? day + 'T' + pad(SETTINGS.open_hour) + ':00' : r.start;
     const slots = Math.max(1, Math.floor(Number(r.slots) || 1));
     const end = whole ? day + 'T' + pad(SETTINGS.close_hour) + ':00' : rangeEnd(day, start.slice(11, 16), slots, res.block_hours);
     if (!whole && !fitsGrid(start, end)) return err('OUT_OF_WINDOW', 'That time is outside the booking schedule.');
     if (end <= nowLocal()) return err('OUT_OF_WINDOW', 'That time has already passed.');
-    const hit = bookings.filter(function (b) { return active(b) && conflicts(b.resource_id, res.resource_id) && overlaps(b, { start: start, end: end }); })[0];
-    if (hit) return err('SLOT_TAKEN', 'Something is already booked in that time: ' + resById(hit.resource_id).name + ', ' + dowName(hit.start) + ' ' + monthName(hit.start) + ' ' + dayNum(hit.start) + ' ' + timeRange(hit.start, hit.end, true) + '.');
+    const hits = bookings.filter(function (b) { return active(b) && conflicts(b.resource_id, res.resource_id) && overlaps(b, { start: start, end: end }); });
+    const label = function (x) { return resById(x.resource_id).name + ', ' + dowName(x.start) + ' ' + monthName(x.start) + ' ' + dayNum(x.start) + ' ' + timeRange(x.start, x.end, true); };
+    if (hits.length && r.bump !== true) {
+      return err('BLOCK_CLASH', 'Already booked in that time: ' + hits.map(function (x) {
+        const bk = memById(x.booker);
+        return label(x) + ' (' + (isBlock(x) ? 'a block' : (bk ? bk.first_name + ' ' + bk.last_name : 'a member') + "'s booking") + ')';
+      }).join('; ') + '.');
+    }
+    hits.forEach(function (x) { x.status = 'Cancelled'; x.cancelled_at = nowLocal(); }); // demo: bumped (owner cancellation)
     const reason = String(r.reason || r.note || '').trim().slice(0, 120);
     const b = addBlock(res, start, end, 'BLOCK' + (reason ? ': ' + reason : ''));
-    return ok({ booking: detail(b, v) });
+    return ok({ booking: detail(b, v), bumped: hits.length });
   }
   if (a === 'ownerRemoveBlock') {
     const b = bookings.filter(function (x) { return x.booking_id === r.booking_id; })[0];

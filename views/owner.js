@@ -535,8 +535,10 @@ export async function renderOwner(root, ctx) {
     fillTimes();
     sync();
 
-    btn.addEventListener('click', async function () {
+    async function submit(bump) {
       clear(slot);
+      const old = blockSlot.querySelector('.block-done');
+      if (old) old.remove(); // the note from the last block, so it never sits next to a new error
       const day = dayInput.value;
       if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) { slot.append(banner('Please pick a day.')); dayInput.focus(); return; }
       const whole = wholeCb.checked, rep = repeatCb.checked;
@@ -553,25 +555,41 @@ export async function renderOwner(root, ctx) {
       } else {
         req = { resource_id: resSel.value, note: note || undefined };
         if (whole) { req.whole_day = true; req.date = day; } else { req.start = day + 'T' + timeSel.value; req.slots = Number(lenSel.value); }
+        if (bump) req.bump = true;
         call_ = 'ownerBlockTime';
       }
       setBusy(btn, true, rep ? 'Setting up…' : 'Blocking…');
       try {
         const out = await call(call_, req);
         let msg = 'Time blocked.';
+        if (out && out.bumped) msg = 'Time blocked. ' + out.bumped + (out.bumped === 1 ? ' booking was' : ' bookings were') + ' cancelled to make room; anyone affected was emailed.';
         if (rep) {
           const n = out.created || 0, c = out.clashes || 0;
           msg = 'Repeating block set up. ' + n + (n === 1 ? ' date is' : ' dates are') + ' blocked so far.' +
             (c ? ' ' + c + (c === 1 ? ' date clashes' : ' dates clash') + " with a member's booking; decide in the Clashes list." : '');
         }
         await loadBlock();
-        blockSlot.append(banner(msg, 'info'));
+        const note_ = banner(msg, 'info');
+        note_.classList.add('block-done');
+        blockSlot.append(note_);
         loadDash();
       } catch (e) {
-        slot.append(banner(e));
         setBusy(btn, false);
+        if (e && e.code === 'BLOCK_CLASH') {
+          // Something is in the way: offer to bump it (owner cancellation, refunds and emails as usual) or keep it.
+          const yes = h('button', { class: 'btn danger', type: 'button', text: 'Bump and block' });
+          const panel = h('div', { class: 'confirm', role: 'alertdialog', 'aria-label': 'Bump bookings' },
+            h('p', { text: e.message }),
+            h('p', { class: 'hint', text: "Bump cancels what's there (free; anything paid is returned; players are told the facility needs the court) and then blocks the time." }),
+            h('div', { class: 'btn-row' }, yes, h('button', { class: 'btn', type: 'button', text: 'Keep them', onclick: function () { clear(slot); } })));
+          yes.addEventListener('click', function () { setBusy(yes, true, 'Bumping…'); submit(true); });
+          slot.append(panel);
+          return;
+        }
+        slot.append(banner(e));
       }
-    });
+    }
+    btn.addEventListener('click', function () { submit(false); });
     blockSlot.append(
       field('Court', resSel), dayField, wholeRow, h('div', { class: 'grid2' }, timeField, lenField),
       field('Reason (optional)', reason), repeatRow, repeatBox, slot, btn);
