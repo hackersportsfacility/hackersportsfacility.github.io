@@ -1368,7 +1368,7 @@ function editSeriesImpl(r) {
   CLASHES.forEach(function (c) { if (c.series_id === old.series_id && c.status === 'Open' && c.date >= from) c.status = 'Expired'; });
   const before = addDays(from, -1);
   if (!old.end_date || old.end_date > before) old.end_date = before;
-  if (old.end_date < todayYmd()) old.status = 'Stopped';
+  if (old.end_date < todayYmd() || old.end_date < old.start_date) old.status = 'Stopped'; // nothing left of it
   seqR++;
   const sr = { series_id: 'R' + ('0000' + seqR).slice(-4), kind: old.kind, resource_id: res.resource_id, weekdays: wd, start_time: startTime, slots: slots, start_date: from, end_date: endDay, reason: reason, status: 'Active',
     skipped: old.skipped.filter(function (d) { return d >= from; }).concat(keep) };
