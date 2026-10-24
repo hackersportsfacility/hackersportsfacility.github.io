@@ -81,6 +81,15 @@ export async function startCardFlow(btn, errSlot, returnTo, onSaved) {
   setBusy(btn, false);
 }
 
+// The note after a card is saved (confirmCardSetup result): says whether what was owed got paid too.
+export function cardSavedNote(out, fallback) {
+  if (out && out.owed_payment && out.owed_payment.paid) {
+    return banner('Card saved, and the ' + money(out.owed_payment.amount) + ' you owed is paid. Thank you!', 'info');
+  }
+  if (out && out.owed_error) return banner('Card saved, but the payment of what you owe did not go through: ' + out.owed_error.message);
+  return banner(fallback, 'info');
+}
+
 // True when a member owes money (Amount Owed). Owner and Family never do; an older saved `me` has no `owed` at all.
 export function owedAmount(me) {
   const o = me && me.owed;
@@ -111,9 +120,8 @@ export function owedCard(me, returnTo, onPaid) {
         fix.addEventListener('click', function () {
           startCardFlow(fix, errSlot, returnTo, async function () {
             clear(errSlot);
-            errSlot.append(banner('Card saved. Tap Pay now to try again.', 'info'));
             clear(cardSlot);
-            await onPaid(true); // reload details only; this card stays so the member can pay
+            pay.click(); // card saved: pay what is owed right away (Ryan, 2026-10-24)
           });
         });
         cardSlot.append(fix);

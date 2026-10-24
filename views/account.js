@@ -1,6 +1,6 @@
 import { call, clearToken, clearCache } from '../api.js';
 import { h, add, clear, fullName, termsLink, fmtDate, hashParams, clearHashParams, cardLabel, money } from '../util.js';
-import { banner, setBusy, startCardFlow, owedCard } from '../ui.js';
+import { banner, setBusy, startCardFlow, owedCard, cardSavedNote } from '../ui.js';
 import { waiverOf, resendGuardian } from './waiver.js';
 
 function platform() {
@@ -155,10 +155,10 @@ export async function renderAccount(root, ctx) {
     clearHashParams();
     if (params.card === 'done' && params.cs) {
       try {
-        await call('confirmCardSetup', { cs: params.cs });
+        const out = await call('confirmCardSetup', { cs: params.cs });
         clearCache();
         await ctx.loadMe();
-        noteSlot.append(banner('Card saved', 'info'));
+        noteSlot.append(cardSavedNote(out, 'Card saved'));
       } catch (e) {
         noteSlot.append(banner(e));
       }

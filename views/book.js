@@ -1,6 +1,6 @@
 import { call, clearCache } from '../api.js';
 import { h, add, icon, clear, parseLocal, todayYmd, addDays, dowName, monthName, dayNum, mondayOf, fmtDay, timeRange, fmtRange, money, isEmail, fullName, termsLink, hashParams, clearHashParams } from '../util.js';
-import { banner, skeleton, field, setBusy, openSheet, startCardFlow, owedCard, owedAmount, weekdayPicker, endPicker } from '../ui.js';
+import { banner, skeleton, field, setBusy, openSheet, startCardFlow, owedCard, owedAmount, weekdayPicker, endPicker, cardSavedNote } from '../ui.js';
 import { waiverOf } from './waiver.js';
 
 const GOLF = 'GOLF';
@@ -124,15 +124,24 @@ export async function renderBook(root, ctx) {
   if (rp.card) {
     clearHashParams();
     if (rp.card === 'done' && rp.cs) {
-      try {
-        await call('confirmCardSetup', { cs: rp.cs });
-        clearCache();
-        me = await ctx.loadMe();
-        cardNoteSlot.append(banner('Card saved. You can request bookings now.', 'info'));
-      } catch (e) {
-        cardNoteSlot.append(banner(e));
-      }
-      if (ctx.stale()) return;
+      // Confirm (and pay anything owed) in the background so the court grid loads right away.
+      cardNoteSlot.append(banner('Saving your card…', 'info'));
+      (async function () {
+        let note;
+        try {
+          const out = await call('confirmCardSetup', { cs: rp.cs });
+          clearCache();
+          me = await ctx.loadMe();
+          note = cardSavedNote(out, 'Card saved. You can request bookings now.');
+        } catch (e) {
+          note = banner(e);
+        }
+        if (ctx.stale()) return;
+        clear(cardNoteSlot);
+        cardNoteSlot.append(note);
+        renderOwed();
+        renderSelbar();
+      })();
     } else if (rp.card === 'cancel') {
       cardNoteSlot.append(banner('No card was saved.', 'info'));
     }
